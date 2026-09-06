@@ -50,7 +50,7 @@ describe("interactive information modules", () => {
     expect(view).toContain("function projectMatches");
     expect(view).toContain("readonly property var visibleCollisions");
     expect(view).toContain("view.projectFilter === projectRow.key");
-    expect(view).toContain('text: "1–9 MODULES');
+    expect(view).toContain('text: "1–9, 0 MODULES');
     expect(view).toContain('"SUPER+I HIDE DESK · SUPER+D SHOW OVER WINDOWS"');
     expect(view).toContain('"SUPER+I HIDE DESK · SUPER+D / ESC CLOSE"');
     expect(overlay).toContain("event.key <= Qt.Key_9");
@@ -188,5 +188,43 @@ describe("session card lines never spill into the neighbouring card", () => {
     // neighbour's git line ("git mainc·uclean · ram 360M"). Fill-width, one line ⇒ elide.
     for (const line of block.split("\n").filter(l => l.includes("PlainText {") && l.includes("Layout.fillWidth: true") && !l.includes("wrapMode")))
       expect(line).toMatch(/elide: Text\.Elide(Right|Middle|Left)/);
+  });
+});
+
+describe("github activity heatmap", () => {
+  test("registers GITHUB as a removable module beside ACTIVITY and reaches it from the keyboard", () => {
+    const ids = [...settings.matchAll(/\{ id: "([a-zA-Z]+)", label: "[^"]+" \}/g)].map(match => match[1]);
+    expect(ids.indexOf("github")).toBe(ids.indexOf("activity") + 1);
+    expect(ids).toHaveLength(10);
+    expect(overlay).toContain("event.key >= Qt.Key_0 && event.key <= Qt.Key_9");
+    expect(overlay).toContain("event.key === Qt.Key_0 ? 9 : event.key - Qt.Key_1");
+    // Key n toggles definitions[n-1]; 0 is the tenth. Documented as 4 = GITHUB, 0 = PROJECTS.
+    expect(ids[3]).toBe("github");
+    expect(ids[9]).toBe("projects");
+  });
+
+  test("splits the activity row into two half-width heatmap cards sharing one HeatPanel", () => {
+    expect(view).toContain("component HeatPanel: Item");
+    expect(view.match(/HeatPanel \{/g)).toHaveLength(2);
+    expect(view).toContain('title: "ACTIVITY · LAST 7 DAYS"');
+    expect(view).toContain('title: "GITHUB · LAST 7 DAYS"');
+    expect(view).toContain('visible: view.sectionEnabled("activity") || view.sectionEnabled("github")');
+    // Both cards ask for an equal share; neither may impose a minimum that pushes the other off screen.
+    expect(view.match(/Layout\.preferredWidth: 1\n\s+Layout\.minimumWidth: 0\n\s+visible: view\.sectionEnabled\("(activity|github)"\)/g)).toHaveLength(2);
+    expect(view).toContain("cells: view.github.cells || []");
+    expect(view).toContain("kindFiltersCells: true");
+    expect(view).toContain("showRepos: true");
+  });
+
+  test("explains every GitHub feed state and keeps the AI activity filter wiring intact", () => {
+    for (const state of ["missing", "unauthenticated", "pending", "unavailable", "stale", "ok"]) expect(view).toContain(`case "${state}":`);
+    expect(view).toContain("run gh auth login");
+    expect(view).toContain("onCellClicked: function(index) { view.toggleActivityCell(index) }");
+    expect(view).toContain("onKindClicked: function(kind) { view.toggleActivityProvider(kind) }");
+    expect(view).toContain("onCellClicked: function(index) { view.toggleGithubCell(index) }");
+    expect(view).toContain('githubCellFilter = -1; githubKindFilter = ""');
+    // A pinned GitHub cell keeps its breakdown in the status line once the pointer leaves it.
+    expect(view).toContain("pinnedBreakdown: true");
+    expect(view).toContain('"pinned · " + panel.cellLabel(panel.selectedCell)');
   });
 });

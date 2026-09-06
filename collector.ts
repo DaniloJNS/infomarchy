@@ -14,6 +14,7 @@ import { join, basename } from "path";
 import { isIP } from "net";
 import { Database } from "bun:sqlite";
 import { localDayIndex, localDayStarts } from "./history-time";
+import { githubRefreshDue, githubSnapshot, parseGithubStoreText, refreshGithubActivity } from "./github-activity";
 import { attentionSignal, parseCommitSummary, parseDiffNumstat, parseGitStatus, projectHealth, repoCollisions, workspaceGroups, resourceDelta, limitForecast } from "./ai-ops";
 import { deriveNotificationEvents } from "./notification-events";
 
@@ -28,6 +29,9 @@ function instanceId(): string {
   return raw.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32) || "bg";
 }
 const PREV_FILE = join(STATE_DIR, `prev-${instanceId()}.json`);
+// Shared by every collector instance: the GitHub rows are the same for the
+// wallpaper and the overlay, and one 7-day store means one set of API calls.
+const GITHUB_FILE = join(STATE_DIR, "github-activity.json");
 const now = Date.now();
 const MIN_RATE_DT = 1;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -332,6 +336,22 @@ async function externalIp() {
 }
 const prev = readJson(PREV_FILE) || {};
 const dt = prev.ts ? (now - prev.ts) / 1000 : 0;
+
+// GitHub activity heatmap feed (see github-activity.ts). Cached on disk and
+// refreshed at most every five minutes; a tick that finds the cache fresh
+// costs one small file read. Only the wallpaper collector refreshes and
+// writes — the overlay's collector reads the same file — so two instances
+// never race each other's fetches. INFOMARCHY_SKIP_GITHUB=1 never calls gh.
+const GITHUB_WRITER = instanceId() !== "overlay";
+async function githubActivity() {
+  const ghAvailable = !!Bun.which("gh");
+  const store = parseGithubStoreText(read(GITHUB_FILE));
+  if (GITHUB_WRITER && ghAvailable && process.env.INFOMARCHY_SKIP_GITHUB !== "1" && githubRefreshDue(store, now)) {
+    await refreshGithubActivity(store, now, run, ghAvailable);
+    try { writePrivateStateFile(STATE_DIR, basename(GITHUB_FILE), JSON.stringify(store)); } catch {}
+  }
+  return githubSnapshot(store, now, heatDays, activityCellIndex, ghAvailable);
+}
 
 // ---------------------------------------------------------------- machine
 function cpu() {
@@ -1813,6 +1833,29 @@ function demoSnapshot(stamp = Date.now()) {
     const n = ((hour + day * 3) % 11 === 0) ? 7 : ((hour + day) % 5 === 0 ? 3 : (hour > 8 && hour < 19 ? 1 : 0));
     return [n, n ? (index % 3 === 0 ? { claude: n } : index % 3 === 1 ? { codex: n } : { opencode: n }) : {}];
   });
+  const githubCells = Array.from({ length: 168 }, (_, index) => {
+    const hour = index % 24, day = Math.floor(index / 24);
+    if (hour < 7 || hour > 22) return [0, {}, {}];
+    const commits = (hour + day * 5) % 4 === 0 ? 4 + ((hour * 7 + day) % 5) : (hour + day) % 3 === 0 ? 1 : 0;
+    const kinds: Record<string, number> = {};
+    if (commits) kinds.commit = commits;
+    if ((hour + day * 2) % 9 === 0) kinds.pr = 1;
+    if ((hour * 3 + day) % 11 === 0) kinds.review = 2;
+    if ((hour + day * 7) % 13 === 0) kinds.issue = 1;
+    if ((hour * 5 + day) % 10 === 0) kinds.comment = 1;
+    const total = Object.values(kinds).reduce((sum, n) => sum + n, 0);
+    const repos: Record<string, number> = total ? (index % 3 === 0 ? { "demo/atlas": total } : index % 3 === 1 ? { "demo/orbit": total } : { "demo/beacon": total }) : {};
+    return [total, kinds, repos];
+  });
+  const githubCounts: Record<string, { today: number; week: number }> = {};
+  githubCells.forEach((cell, index) => {
+    for (const [kind, n] of Object.entries(cell[1] as Record<string, number>)) {
+      const entry = githubCounts[kind] || (githubCounts[kind] = { today: 0, week: 0 });
+      entry.week += n;
+      if (Math.floor(index / 24) === 6 && index % 24 <= new Date(stamp).getHours()) entry.today += n;
+    }
+  });
+  const github = { state: "ok", login: "demo", fetchedAt: stamp - 90_000, coverage: "complete", coveredFrom: dayStarts[0], error: "", days: dayStarts, cells: githubCells, counts: githubCounts };
   const sessions = [
     {
       provider: "codex", pid: 42421, cwd: "~/Code/atlas", project: "atlas", startedAt: stamp - 38 * 60_000,
@@ -1895,7 +1938,7 @@ function demoSnapshot(stamp = Date.now()) {
         claude: { name: "Claude", ready: true, tierLabel: "Max", todayPrompts: 18, todayTotalTokens: 184_000, limits: [{ label: "SESSION", percent: 0.46, resetsAt: new Date(stamp + 2.1 * 3600_000).toISOString() }, { label: "WEEKLY", percent: 0.61, resetsAt: new Date(stamp + 3.4 * 86400_000).toISOString() }] },
         codex: { name: "Codex", ready: true, tierLabel: "Pro", todayPrompts: 27, todayTotalTokens: 311_000, limits: [{ label: "5-HOUR", percent: 0.38, resetsAt: new Date(stamp + 3.2 * 3600_000).toISOString() }, { label: "7-DAY", percent: 0.54, resetsAt: new Date(stamp + 4.2 * 86400_000).toISOString() }] },
       },
-      heatmap: { start: dayStarts[0], days: dayStarts, cells }, recent, recentTruncated: false,
+      heatmap: { start: dayStarts[0], days: dayStarts, cells }, github, recent, recentTruncated: false,
     },
   };
 }
@@ -1906,8 +1949,8 @@ async function runCollector() {
     return;
   }
   const pids = scanProcs();
-  const [cpuS, memS, diskS, netS, pingS, gpuS, sessions, ollama, externalIpS] = await Promise.all([
-    Promise.resolve(cpu()), Promise.resolve(mem()), disk(), net(), ping(), gpu(), liveSessions(pids), ollamaState(), externalIp(),
+  const [cpuS, memS, diskS, netS, pingS, gpuS, sessions, ollama, externalIpS, github] = await Promise.all([
+    Promise.resolve(cpu()), Promise.resolve(mem()), disk(), net(), ping(), gpu(), liveSessions(pids), ollamaState(), externalIp(), githubActivity(),
   ]);
   const claude = claudeHistory(), codex = codexHistory(), grok = grokHistory(), opencode = opencodeHistory();
   recent.sort((a, b) => b.ts - a.ts);
@@ -1944,6 +1987,7 @@ async function runCollector() {
       counts, providers: { claude, codex, grok, opencode, ollama }, usage: agentsUsage(),
       usageDays: heatDays.map(localDayKey),
       heatmap: { start: start7, days: heatDays, cells: heat.map(c => [c.n, c.p]) },
+      github,
       recent: dashboardRecent, recentTruncated,
     },
   };

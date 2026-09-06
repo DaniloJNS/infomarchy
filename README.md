@@ -93,6 +93,12 @@ Model changes go through a bounded stdin-framed helper. It validates the model n
 
 An hour-by-hour heatmap of prompts across **every** provider, newest day at the bottom, with a red tick at *now*. The dominant provider colours each cell; intensity is volume. Cells are local wall-clock hours, so on the two DST nights a year one hour is doubled up (fall) or absent (spring). Hover a cell for the exact breakdown (*"Tue 18 Aug 16:00 · 8 prompts (Claude 6, Codex 2)"*). Click an hour to filter Recent Tasks to that hour; click a provider in the legend to combine a provider filter. The selected cell and provider stay outlined, and clicking either again—or **clear**—removes that part of the filter. The header carries today/week counts per provider.
 
+### 🟢 GitHub · last 7 days — *what actually landed*
+
+The right half of the same row is the identical grid fed from GitHub: **commits, PRs, reviews, issues, comments** and everything else (releases, forks, stars, branch creates) as *other*, each cell coloured by its dominant kind, the same red tick at *now*. Hover a cell for the breakdown plus the repositories involved (*"Fri 4 Sep 23:00 · 9 events · commits 7 · PRs 2 · infomarchy, blip"*). The header carries today/week counts per kind. There is no list to filter here, so a click **pins** a cell (its breakdown stays in the status line) and clicking a kind in the legend recolours the grid to that kind alone; **clear** or the overlay's **A** key resets both. In the overlay the module answers to key **4** (ACTIVITY is 3; the modules after it shift by one and **0** reaches the tenth).
+
+Data comes through the already-authenticated GitHub CLI (`gh`), nothing else: commits from `search/commits` by author date (one row per commit, default branches only — a push to a feature branch shows once it lands), everything else from your own events feed, private repositories included. GitHub caps a search at 1000 rows and 30 calls a minute, so the week is filled in incrementally — one step a minute until the oldest day is covered (the status line says *filling in older days* meanwhile), then a five-minute refresh. Rows are cached in a private state file written by the wallpaper collector and read by the overlay, so a restart or a dropped connection shows the cached grid rather than an empty card — marked *stale* once fetches have been failing for fifteen minutes, with retries backing off to five minutes. Every six hours the week is walked again so a commit merged days after it was authored still lands in its hour. Switching `gh` accounts starts the store over. Without `gh`, or before `gh auth login`, the card says exactly that. `INFOMARCHY_SKIP_GITHUB=1` in the collector's environment disables the fetch entirely. Remove either card from the module strip and the other takes the full row.
+
 ### ⚪ Recent tasks — *what got asked*
 
 The newest prompts across all providers — time ago, provider tag, project, and the prompt itself — so the question *"what was I doing an hour ago?"* has an answer on the wall. The list keeps up to 80 rows in a scrollable history, with a search box that matches prompt text, project, or provider (filtered searches can show up to 200 matches). Prompts whose exact agent session is still running stay bright and clickable; click one to jump to its terminal. Supported closed sessions are dimmed but remain interactive: hover for **RESUME**, then click to reopen that exact Claude, Codex, Grok, or OpenCode session in a terminal at its project directory.
@@ -176,7 +182,7 @@ omarchy restart shell
 
 ## Requirements
 
-Omarchy Quattro with third-party shell plugin support, `bun` (**not** part of the Omarchy base install — `sudo pacman -S bun`), `iw`, `iproute2`, and `ping`. Optional: `nvidia-smi` (GPU row hides without it), authenticated GitHub CLI `gh` (for the latest CI result), the `omarchy.agents` bar widget (for the usage card), Ollama (for the local-AI card), and Herdr/Boomux/tmux when those hosts are actually used. Infomarchy does not start or configure a multiplexer. Hyprland 0.56+ (Lua dispatch) and older (`focuswindow`) are both handled.
+Omarchy Quattro with third-party shell plugin support, `bun` (**not** part of the Omarchy base install — `sudo pacman -S bun`), `iw`, `iproute2`, and `ping`. Optional: `nvidia-smi` (GPU row hides without it), authenticated GitHub CLI `gh` (for the latest CI result and the GITHUB heatmap), the `omarchy.agents` bar widget (for the usage card), Ollama (for the local-AI card), and Herdr/Boomux/tmux when those hosts are actually used. Infomarchy does not start or configure a multiplexer. Hyprland 0.56+ (Lua dispatch) and older (`focuswindow`) are both handled.
 
 ## It follows your theme
 
@@ -196,7 +202,7 @@ The screenshots above are the **Last Call** theme. A theme gallery is on the roa
 │  ~/.local/share/opencode/*.db│                                     │
 │  Ollama /api/ps /api/tags    │               ┌─────────────────────┴───────────────────┐
 │  omarchy agents usage cache  │               │ InfoView.qml  (cards, heatmap, meters)  │
-│  git · optional gh CI status │               └───────┬───────────────────────┬─────────┘
+│  git · gh CI · gh activity   │               └───────┬───────────────────────┬─────────┘
 │  iw · ip · ping · nvidia-smi │                       │                       │
 └──────────────────────────────┘                       │                       │
                                      Infomarchy.qml ◀──┘                       └──▶ Overlay.qml
@@ -205,6 +211,7 @@ The screenshots above are the **Last Call** theme. A theme gallery is on the roa
 ```
 
 - **`collector.ts`** builds one snapshot. It reads `argv` for every pid (cheap), then lazily opens only agent processes and their ancestors, so a 1 000-process box costs ~0.2 s warm. Local files are opened once with no-follow/nonblocking semantics, must be regular files, and are read under byte/time limits. Rate baselines use private, atomic state files under `$XDG_STATE_HOME/infomarchy/prev-<instance>.json`. It never parses the multi-hundred-MB Claude/Codex session transcripts — only the small history/index files and OpenCode's local SQLite history.
+- **`github-activity.ts`** keeps the 7-day GitHub row store: incremental `search/commits` and events fetches through `gh`, keyed by sha and event id, pruned to the window, turned into the same 7×24 cells as the prompt heatmap.
 - **`resume-session.ts`** maps each supported provider to its installed CLI resume syntax and launches it through `xdg-terminal-exec`. Provider, ID, and project are separate process arguments; prompt text is never executed.
 - **`ollama-control.ts`** accepts one bounded JSON frame over stdin, validates the requested model against Ollama's inventory, and performs only explicit load/unload operations.
 - **`notification-events.ts`** derives bounded, stable attention and lifecycle events. The background service sends them through Omarchy's notification interface after persistent deduplication; the overlay never sends a duplicate copy.

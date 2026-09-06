@@ -13,6 +13,7 @@ Item {
     { id: "needs", label: "NEXT ACTIONS" },
     { id: "sessions", label: "SESSIONS" },
     { id: "activity", label: "ACTIVITY" },
+    { id: "github", label: "GITHUB" },
     { id: "recent", label: "RECENT" },
     { id: "usage", label: "USAGE" },
     { id: "localAi", label: "LOCAL AI" },

@@ -18,6 +18,11 @@ Item {
   property bool keyboardAvailable: true
   property int activityCellFilter: -1
   property string activityProviderFilter: ""
+  // GITHUB · LAST 7 DAYS has no list to filter, so a selected cell is a pin
+  // (its breakdown stays in the status line) and a selected kind recolours
+  // the grid to that kind alone.
+  property int githubCellFilter: -1
+  property string githubKindFilter: ""
   property var inspectedSession: null
   property var selectedPrompt: null
   property string usageProviderFilter: ""
@@ -248,7 +253,64 @@ Item {
   }
   function toggleActivityCell(index) { activityCellFilter = activityCellFilter === index ? -1 : index }
   function toggleActivityProvider(provider) { activityProviderFilter = activityProviderFilter === provider ? "" : provider }
-  function clearActivityFilter() { activityCellFilter = -1; activityProviderFilter = "" }
+  function clearActivityFilter() { activityCellFilter = -1; activityProviderFilter = ""; githubCellFilter = -1; githubKindFilter = "" }
+  readonly property var github: ai.github || ({})
+  readonly property var githubKinds: ["commit", "pr", "review", "issue", "comment", "other"]
+  readonly property bool githubFilterActive: sectionEnabled("github") && (githubCellFilter >= 0 || githubKindFilter !== "")
+  function toggleGithubCell(index) { githubCellFilter = githubCellFilter === index ? -1 : index }
+  function toggleGithubKind(kind) { githubKindFilter = githubKindFilter === kind ? "" : kind }
+  function githubKindColor(kind) {
+    switch (String(kind)) {
+      case "commit": return desk.green
+      case "pr": return desk.magenta
+      case "review": return desk.cyan
+      case "issue": return desk.yellow
+      case "comment": return desk.blue
+      default: return textDim
+    }
+  }
+  function githubKindLabel(kind) {
+    switch (String(kind)) {
+      case "commit": return "commits"
+      case "pr": return "PRs"
+      case "review": return "reviews"
+      case "issue": return "issues"
+      case "comment": return "comments"
+      case "other": return "other"
+      default: return String(kind)
+    }
+  }
+  function githubHint() {
+    var c = github.counts || {}, parts = []
+    for (var i = 0; i < githubKinds.length; i++) {
+      var k = githubKinds[i]
+      if (c[k] && (c[k].week > 0 || c[k].today > 0)) parts.push(githubKindLabel(k) + " " + c[k].today + "/" + c[k].week)
+    }
+    if (!parts.length) return github.login ? "@" + github.login : ""
+    return "today/week · " + parts.join(" · ")
+  }
+  // Why the GitHub grid is empty or behind, in the words the user needs.
+  function githubStatus() {
+    switch (String(github.state || "")) {
+      case "missing": return "gh not installed · pacman -S github-cli"
+      case "unauthenticated": return "gh not authenticated · run gh auth login"
+      case "pending": return "fetching GitHub activity…"
+      case "unavailable": return "GitHub unreachable · " + String(github.error || "fetch failed")
+      case "stale": return "stale · " + String(github.error || "fetch failed") + " · cached rows"
+      case "ok": return (github.login ? "@" + github.login + " · " : "") + (github.coverage === "partial" ? "filling older days · " : "") + "hover · click pins · red = now"
+      default: return ""
+    }
+  }
+  function githubFilterLabel() {
+    var parts = []
+    if (githubCellFilter >= 0) {
+      var days = github.days || []
+      var day = Math.floor(githubCellFilter / 24), hour = githubCellFilter % 24
+      if (Number(days[day] || 0) > 0) parts.push(Qt.formatDate(new Date(days[day]), "ddd d MMM") + " " + (hour < 10 ? "0" : "") + hour + ":00")
+    }
+    if (githubKindFilter) parts.push(githubKindLabel(githubKindFilter))
+    return parts.join(" · ")
+  }
   function activityFilterLabel() {
     var parts = []
     if (activityCellFilter >= 0) {
@@ -325,7 +387,10 @@ Item {
           PlainText { visible: card.draggable; text: "⋮⋮"; color: card.dragging ? view.desk.cyan : view.textFaint; font.family: view.mono; font.pixelSize: Style.font.bodySmall }
           PlainText { text: card.title; color: view.textDim; font.family: view.mono; font.pixelSize: Style.font.caption; font.letterSpacing: 1.5; font.bold: true }
           Item { Layout.fillWidth: true }
-          PlainText { text: card.hint; color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption }
+          // A non-fill item is never shrunk below its preferred width by the
+          // layout, so a long hint would run past a half-width card; fill and
+          // cap at the natural width instead, and elide when there is no room.
+          PlainText { text: card.hint; color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.maximumWidth: implicitWidth }
         }
         MouseArea {
           anchors.fill: parent
@@ -373,6 +438,224 @@ Item {
         // from this item. Only use a sole content item's implicit size here, so
         // that parent-sized children cannot form an implicit-height loop.
         implicitHeight: children.length === 1 ? Number(children[0].implicitHeight || 0) : 0
+      }
+    }
+  }
+
+  // One 7×24 hour grid with its tooltip and legend. ACTIVITY and GITHUB share
+  // it; the host decides what a kind is, what colour it gets, and what a click
+  // means. `kindFiltersCells` recolours the grid to the selected kind alone.
+  component HeatPanel: Item {
+    id: panel
+    property var cells: []
+    property var days: []
+    property real startTs: 0
+    property var kinds: []
+    property var colorFor: function(kind) { return view.desk.providerColor(kind) }
+    property var labelFor: function(kind) { return view.desk.providerLabel(kind) }
+    property string unit: "prompts"
+    property bool showRepos: false
+    property bool kindFiltersCells: false
+    property int selectedCell: -1
+    property string selectedKind: ""
+    property bool filterActive: false
+    property string filterLabel: ""
+    property string idleStatus: "hover · click filters tasks · red = now"
+    property string hoverStatus: "click to filter tasks"
+    property string emptyText: ""
+    // A pinned cell keeps its full breakdown in the status line (GitHub has no
+    // list to filter, so the pin is the detail view).
+    property bool pinnedBreakdown: false
+    signal cellClicked(int index)
+    signal kindClicked(string kind)
+    signal clearClicked()
+    width: parent ? parent.width : 400
+    implicitHeight: heat.height + Style.spacing.md + legend.implicitHeight
+    function dayTs(index) { return days[index] || (startTs + index * 86400000) }
+    function cellCount(cell) {
+      if (kindFiltersCells && selectedKind) return Number((cell[1] || {})[selectedKind] || 0)
+      return Number(cell[0] || 0)
+    }
+    function cellLabel(index) {
+      if (index < 0) return ""
+      var c = cells[index] || [0, {}, {}], d = Math.floor(index / 24), h = index % 24
+      var dt = new Date(dayTs(d)), parts = []
+      for (var k in c[1]) parts.push(labelFor(k) + " " + c[1][k])
+      var label = Qt.formatDate(dt, "ddd d MMM") + " " + (h < 10 ? "0" : "") + h + ":00 · " + c[0] + " " + unit + (parts.length ? " · " + parts.join(" · ") : "")
+      if (showRepos && c[2]) {
+        var repos = []
+        for (var r in c[2]) repos.push([r, c[2][r]])
+        repos.sort(function(a, b) { return b[1] - a[1] })
+        var names = repos.slice(0, 3).map(function(entry) { return String(entry[0]).replace(/^[^/]*\//, "") })
+        if (names.length) label += " · " + names.join(", ") + (repos.length > 3 ? " +" + (repos.length - 3) : "")
+      }
+      return label
+    }
+    readonly property bool hasData: {
+      for (var i = 0; i < cells.length; i++) if (Number((cells[i] || [0])[0]) > 0) return true
+      return false
+    }
+    Canvas {
+      id: heat
+      width: parent.width
+      height: Math.round(7 * 13 * Style.fontScale)
+      property int hoverIdx: -1
+      Connections { target: panel; function onCellsChanged() { heat.requestPaint() } function onSelectedCellChanged() { heat.requestPaint() } function onSelectedKindChanged() { heat.requestPaint() } }
+      Connections { target: view.desk; function onGreenChanged() { heat.requestPaint() } function onThemeForegroundChanged() { heat.requestPaint() } }
+      onPaint: {
+        var ctx = getContext("2d"); ctx.reset()
+        var labelW = Math.round(34 * Style.fontScale)
+        var cw = (width - labelW) / 24, ch = height / 7
+        var cells = panel.cells
+        var maxN = 1
+        for (var i = 0; i < cells.length; i++) { var count = panel.cellCount(cells[i] || [0, {}]); if (count > maxN) maxN = count }
+        ctx.font = Style.font.caption + "px \"" + view.mono + "\""
+        ctx.textBaseline = "middle"
+        var dayNames = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
+        for (var d = 0; d < 7; d++) {
+          var dt = new Date(panel.dayTs(d))
+          ctx.fillStyle = Qt.rgba(view.textFaint.r, view.textFaint.g, view.textFaint.b, view.textFaint.a)
+          ctx.fillText(dayNames[dt.getDay()], 0, d * ch + ch / 2)
+          for (var h = 0; h < 24; h++) {
+            var idx = d * 24 + h
+            var c = cells[idx] || [0, {}]
+            var n = panel.cellCount(c), x = labelW + h * cw, y = d * ch
+            var base = view.desk.themeForeground
+            ctx.fillStyle = Qt.rgba(base.r, base.g, base.b, 0.05)
+            ctx.fillRect(x + 1, y + 1, cw - 2, ch - 2)
+            if (n > 0) {
+              // dominant kind colours the cell; intensity = count
+              var best = "", bn = 0
+              if (panel.kindFiltersCells && panel.selectedKind) best = panel.selectedKind
+              else for (var k in c[1]) if (c[1][k] > bn) { bn = c[1][k]; best = k }
+              var col = panel.colorFor(best)
+              var a = 0.25 + 0.75 * Math.min(1, n / maxN)
+              ctx.fillStyle = Qt.rgba(col.r, col.g, col.b, a)
+              ctx.fillRect(x + 1, y + 1, cw - 2, ch - 2)
+            }
+            if (idx === panel.selectedCell) {
+              var selected = panel.selectedKind ? panel.colorFor(panel.selectedKind) : view.desk.themeForeground
+              ctx.strokeStyle = Qt.rgba(selected.r, selected.g, selected.b, 1)
+              ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, cw - 2, ch - 2)
+            } else if (idx === hoverIdx) {
+              ctx.strokeStyle = Qt.rgba(base.r, base.g, base.b, 0.9)
+              ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1)
+            }
+          }
+        }
+        // "now" marker
+        var nowD = new Date(), nd = -1
+        for (var di = 0; di < 7; di++) {
+          var markerDay = new Date(panel.dayTs(di))
+          if (markerDay.getFullYear() === nowD.getFullYear() && markerDay.getMonth() === nowD.getMonth() && markerDay.getDate() === nowD.getDate()) { nd = di; break }
+        }
+        if (nd >= 0 && nd < 7) {
+          var nx = labelW + (nowD.getHours() + nowD.getMinutes() / 60) * cw
+          ctx.strokeStyle = Qt.rgba(view.desk.red.r, view.desk.red.g, view.desk.red.b, 0.8)
+          ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(nx, nd * ch); ctx.lineTo(nx, nd * ch + ch); ctx.stroke()
+        }
+      }
+      MouseArea {
+        id: heatMouse
+        property real pointerX: 0
+        property real pointerY: 0
+        anchors.fill: parent; hoverEnabled: true; enabled: view.interactive
+        cursorShape: heat.hoverIdx >= 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+        onPositionChanged: function(m) {
+          pointerX = m.x; pointerY = m.y
+          var labelW = Math.round(34 * Style.fontScale)
+          var cw = (heat.width - labelW) / 24, ch = heat.height / 7
+          var h = Math.floor((m.x - labelW) / cw), d = Math.floor(m.y / ch)
+          heat.hoverIdx = (h >= 0 && h < 24 && d >= 0 && d < 7) ? d * 24 + h : -1
+          heat.requestPaint()
+        }
+        onExited: { heat.hoverIdx = -1; heat.requestPaint() }
+        onClicked: if (heat.hoverIdx >= 0) panel.cellClicked(heat.hoverIdx)
+      }
+      PlainText {
+        anchors.centerIn: parent
+        visible: !panel.hasData && panel.emptyText !== ""
+        text: panel.emptyText
+        color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption
+      }
+      Rectangle {
+        id: heatTooltip
+        z: 20
+        visible: heat.hoverIdx >= 0
+        width: Math.min(implicitWidth, heat.width - Style.spacing.md * 2)
+        implicitWidth: heatTooltipText.implicitWidth + Style.spacing.lg * 2
+        height: heatTooltipText.implicitHeight + Style.spacing.md * 2
+        x: Math.max(0, Math.min(heat.width - width, heatMouse.pointerX + 14))
+        y: Math.max(0, Math.min(heat.height - height, heatMouse.pointerY - height - 10))
+        radius: view.radius
+        color: Util.alpha(view.desk.themeBackground, 0.96)
+        border.color: Util.alpha(view.desk.themeForeground, 0.55)
+        border.width: 1
+        PlainText {
+          id: heatTooltipText
+          anchors.centerIn: parent
+          width: Math.min(implicitWidth, heat.width - Style.spacing.xl * 2)
+          text: panel.cellLabel(heat.hoverIdx)
+          color: view.desk.themeForeground
+          font.family: view.mono
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+      }
+    }
+    RowLayout {
+      id: legend
+      anchors { top: heat.bottom; topMargin: Style.spacing.md; left: parent.left; right: parent.right }
+      spacing: Style.spacing.md
+      Repeater {
+        model: panel.kinds
+        delegate: Rectangle {
+          id: kindChip
+          required property string modelData
+          readonly property bool selected: panel.selectedKind === modelData
+          readonly property color tone: panel.colorFor(modelData)
+          implicitWidth: kindChipRow.implicitWidth + Style.spacing.sm * 2
+          implicitHeight: kindChipRow.implicitHeight + Style.spacing.xs * 2
+          radius: view.radius
+          color: selected ? Util.alpha(tone, 0.16) : "transparent"
+          border.color: selected ? Util.alpha(tone, 0.8) : "transparent"
+          border.width: selected ? 1 : 0
+          opacity: panel.selectedKind && !selected ? 0.34 : 1
+          RowLayout {
+            id: kindChipRow
+            anchors.centerIn: parent
+            spacing: Style.spacing.xs
+            Rectangle { width: 8; height: 8; radius: 2; color: kindChip.tone }
+            PlainText { text: panel.labelFor(kindChip.modelData); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption }
+          }
+          MouseArea {
+            anchors.fill: parent
+            enabled: view.interactive
+            cursorShape: Qt.PointingHandCursor
+            onClicked: panel.kindClicked(kindChip.modelData)
+          }
+        }
+      }
+      Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
+      PlainText {
+        id: heatStatus
+        Layout.fillWidth: true
+        Layout.minimumWidth: 0
+        horizontalAlignment: Text.AlignRight
+        elide: Text.ElideRight
+        text: {
+          if (heat.hoverIdx >= 0) return panel.hoverStatus
+          if (!panel.filterActive) return panel.idleStatus
+          if (panel.pinnedBreakdown && panel.selectedCell >= 0) return "pinned · " + panel.cellLabel(panel.selectedCell) + (panel.selectedKind ? " · " + panel.labelFor(panel.selectedKind) : "") + " · clear"
+          return "filtered · " + panel.filterLabel + " · clear"
+        }
+        color: view.textDim; font.family: view.mono; font.pixelSize: Style.font.caption
+        MouseArea {
+          anchors.fill: parent
+          enabled: view.interactive && panel.filterActive && heat.hoverIdx < 0
+          cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+          onClicked: panel.clearClicked()
+        }
       }
     }
   }
@@ -478,7 +761,7 @@ Item {
         // On the wallpaper SUPER+D opens the desktop view; in that view it closes it.
         Tag { text: view.keyboardAvailable ? "SUPER+I HIDE DESK · SUPER+D / ESC CLOSE" : "SUPER+I HIDE DESK · SUPER+D SHOW OVER WINDOWS"; tone: view.textFaint }
         // Keyboard shortcuts only reach the overlay (the wallpaper layer has no keyboard focus).
-        Tag { visible: view.keyboardAvailable; text: "1–9 MODULES · J/K SESSION · ENTER FOCUS · A CLEAR"; tone: view.textFaint }
+        Tag { visible: view.keyboardAvailable; text: "1–9, 0 MODULES · J/K SESSION · ENTER FOCUS · A CLEAR"; tone: view.textFaint }
         Tag {
           visible: view.desk.bunChecked && !view.desk.bunAvailable
           text: "⚠ " + view.desk.missingDependencyHint
@@ -840,179 +1123,65 @@ Item {
           }
         }
 
-        // ---- heatmap ----
-        Card {
+        // ---- heatmaps: AI prompts on the left, GitHub on the right ----
+        RowLayout {
           Layout.fillWidth: true
-          visible: view.sectionEnabled("activity")
-          title: "ACTIVITY · LAST 7 DAYS"
-          hint: {
-            var c = view.ai.counts || {}; var parts = []
-            for (var k in c) parts.push(view.desk.providerLabel(k) + " " + c[k].today + "/" + c[k].week)
-            return parts.length ? "today/week · " + parts.join(" · ") : ""
-          }
-          Item {
-            width: parent.width
-            implicitHeight: heat.height + Style.spacing.md + legend.implicitHeight
-            Canvas {
-              id: heat
-              width: parent.width
-              height: Math.round(7 * 13 * Style.fontScale)
-              property var cells: (view.ai.heatmap || {}).cells || []
-              property real startTs: (view.ai.heatmap || {}).start || 0
-              property var days: (view.ai.heatmap || {}).days || []
-              property int hoverIdx: -1
-              function dayTs(index) { return days[index] || (startTs + index * 86400000) }
-              function cellLabel(index) {
-                if (index < 0) return ""
-                var c = cells[index] || [0, {}], d = Math.floor(index / 24), h = index % 24
-                var dt = new Date(dayTs(d)), parts = []
-                for (var k in c[1]) parts.push(view.desk.providerLabel(k) + " " + c[1][k])
-                return Qt.formatDate(dt, "ddd d MMM") + " " + (h < 10 ? "0" : "") + h + ":00 · " + c[0] + " prompts" + (parts.length ? " · " + parts.join(" · ") : "")
-              }
-              onCellsChanged: requestPaint()
-              Connections { target: view; function onActivityCellFilterChanged() { heat.requestPaint() } }
-              Connections { target: view.desk; function onGreenChanged() { heat.requestPaint() } function onThemeForegroundChanged() { heat.requestPaint() } }
-              onPaint: {
-                var ctx = getContext("2d"); ctx.reset()
-                var labelW = Math.round(34 * Style.fontScale)
-                var cw = (width - labelW) / 24, ch = height / 7
-                var maxN = 1
-                for (var i = 0; i < cells.length; i++) if (cells[i][0] > maxN) maxN = cells[i][0]
-                ctx.font = Style.font.caption + "px \"" + view.mono + "\""
-                ctx.textBaseline = "middle"
-                var days = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
-                for (var d = 0; d < 7; d++) {
-                  var dt = new Date(dayTs(d))
-                  ctx.fillStyle = Qt.rgba(view.textFaint.r, view.textFaint.g, view.textFaint.b, view.textFaint.a)
-                  ctx.fillText(days[dt.getDay()], 0, d * ch + ch / 2)
-                  for (var h = 0; h < 24; h++) {
-                    var idx = d * 24 + h
-                    var c = cells[idx] || [0, {}]
-                    var n = c[0], x = labelW + h * cw, y = d * ch
-                    var base = view.desk.themeForeground
-                    ctx.fillStyle = Qt.rgba(base.r, base.g, base.b, 0.05)
-                    ctx.fillRect(x + 1, y + 1, cw - 2, ch - 2)
-                    if (n > 0) {
-                      // dominant provider colors the cell; intensity = count
-                      var best = "", bn = 0
-                      for (var k in c[1]) if (c[1][k] > bn) { bn = c[1][k]; best = k }
-                      var col = view.desk.providerColor(best)
-                      var a = 0.25 + 0.75 * Math.min(1, n / maxN)
-                      ctx.fillStyle = Qt.rgba(col.r, col.g, col.b, a)
-                      ctx.fillRect(x + 1, y + 1, cw - 2, ch - 2)
-                    }
-                    if (idx === view.activityCellFilter) {
-                      var selected = view.desk.providerColor(view.activityProviderFilter || "codex")
-                      ctx.strokeStyle = Qt.rgba(selected.r, selected.g, selected.b, 1)
-                      ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, cw - 2, ch - 2)
-                    } else if (idx === hoverIdx) {
-                      ctx.strokeStyle = Qt.rgba(base.r, base.g, base.b, 0.9)
-                      ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1)
-                    }
-                  }
-                }
-                // "now" marker
-                var nowD = new Date(), nd = -1
-                for (var di = 0; di < 7; di++) {
-                  var markerDay = new Date(dayTs(di))
-                  if (markerDay.getFullYear() === nowD.getFullYear() && markerDay.getMonth() === nowD.getMonth() && markerDay.getDate() === nowD.getDate()) { nd = di; break }
-                }
-                if (nd >= 0 && nd < 7) {
-                  var nx = labelW + (nowD.getHours() + nowD.getMinutes() / 60) * cw
-                  ctx.strokeStyle = Qt.rgba(view.desk.red.r, view.desk.red.g, view.desk.red.b, 0.8)
-                  ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(nx, nd * ch); ctx.lineTo(nx, nd * ch + ch); ctx.stroke()
-                }
-              }
-              MouseArea {
-                id: heatMouse
-                property real pointerX: 0
-                property real pointerY: 0
-                anchors.fill: parent; hoverEnabled: true; enabled: view.interactive
-                cursorShape: heat.hoverIdx >= 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
-                onPositionChanged: function(m) {
-                  pointerX = m.x; pointerY = m.y
-                  var labelW = Math.round(34 * Style.fontScale)
-                  var cw = (heat.width - labelW) / 24, ch = heat.height / 7
-                  var h = Math.floor((m.x - labelW) / cw), d = Math.floor(m.y / ch)
-                  heat.hoverIdx = (h >= 0 && h < 24 && d >= 0 && d < 7) ? d * 24 + h : -1
-                  heat.requestPaint()
-                }
-                onExited: { heat.hoverIdx = -1; heat.requestPaint() }
-                onClicked: if (heat.hoverIdx >= 0) view.toggleActivityCell(heat.hoverIdx)
-              }
-              Rectangle {
-                id: heatTooltip
-                z: 20
-                visible: heat.hoverIdx >= 0
-                width: Math.min(implicitWidth, heat.width - Style.spacing.md * 2)
-                implicitWidth: heatTooltipText.implicitWidth + Style.spacing.lg * 2
-                height: heatTooltipText.implicitHeight + Style.spacing.md * 2
-                x: Math.max(0, Math.min(heat.width - width, heatMouse.pointerX + 14))
-                y: Math.max(0, Math.min(heat.height - height, heatMouse.pointerY - height - 10))
-                radius: view.radius
-                color: Util.alpha(view.desk.themeBackground, 0.96)
-                border.color: Util.alpha(view.desk.themeForeground, 0.55)
-                border.width: 1
-                PlainText {
-                  id: heatTooltipText
-                  anchors.centerIn: parent
-                  width: Math.min(implicitWidth, heat.width - Style.spacing.xl * 2)
-                  text: heat.cellLabel(heat.hoverIdx)
-                  color: view.desk.themeForeground
-                  font.family: view.mono
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
-                }
-              }
+          visible: view.sectionEnabled("activity") || view.sectionEnabled("github")
+          spacing: view.gap
+          Card {
+            Layout.fillWidth: true
+            Layout.preferredWidth: 1
+            Layout.minimumWidth: 0
+            visible: view.sectionEnabled("activity")
+            title: "ACTIVITY · LAST 7 DAYS"
+            hint: {
+              var c = view.ai.counts || {}; var parts = []
+              for (var k in c) parts.push(view.desk.providerLabel(k) + " " + c[k].today + "/" + c[k].week)
+              return parts.length ? "today/week · " + parts.join(" · ") : ""
             }
-            RowLayout {
-              id: legend
-              anchors { top: heat.bottom; topMargin: Style.spacing.md; left: parent.left; right: parent.right }
-              spacing: Style.spacing.lg
-              Repeater {
-                model: ["claude", "codex", "grok", "opencode", "gemini", "ollama"]
-                delegate: Rectangle {
-                  id: providerFilter
-                  required property string modelData
-                  readonly property bool selected: view.activityProviderFilter === modelData
-                  readonly property color tone: view.desk.providerColor(modelData)
-                  implicitWidth: providerFilterRow.implicitWidth + Style.spacing.sm * 2
-                  implicitHeight: providerFilterRow.implicitHeight + Style.spacing.xs * 2
-                  radius: view.radius
-                  color: selected ? Util.alpha(tone, 0.16) : "transparent"
-                  border.color: selected ? Util.alpha(tone, 0.8) : "transparent"
-                  border.width: selected ? 1 : 0
-                  opacity: view.activityProviderFilter && !selected ? 0.34 : 1
-                  RowLayout {
-                    id: providerFilterRow
-                    anchors.centerIn: parent
-                    spacing: Style.spacing.xs
-                    Rectangle { width: 8; height: 8; radius: 2; color: providerFilter.tone }
-                    PlainText { text: view.desk.providerLabel(providerFilter.modelData); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption }
-                  }
-                  MouseArea {
-                    anchors.fill: parent
-                    enabled: view.interactive
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: view.toggleActivityProvider(providerFilter.modelData)
-                  }
-                }
-              }
-              Item { Layout.fillWidth: true }
-              PlainText {
-                id: heatStatus
-                text: {
-                  if (heat.hoverIdx < 0) return view.activityFilterActive ? "filtered · " + view.activityFilterLabel() + " · clear" : "hover for details · click to filter · red tick = now"
-                  return "click hovered cell to filter"
-                }
-                color: view.textDim; font.family: view.mono; font.pixelSize: Style.font.caption
-                MouseArea {
-                  anchors.fill: parent
-                  enabled: view.interactive && view.activityFilterActive && heat.hoverIdx < 0
-                  cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                  onClicked: view.clearActivityFilter()
-                }
-              }
+            HeatPanel {
+              cells: (view.ai.heatmap || {}).cells || []
+              startTs: (view.ai.heatmap || {}).start || 0
+              days: (view.ai.heatmap || {}).days || []
+              kinds: ["claude", "codex", "grok", "opencode", "gemini", "ollama"]
+              unit: "prompts"
+              selectedCell: view.activityCellFilter
+              selectedKind: view.activityProviderFilter
+              filterActive: view.activityFilterActive
+              filterLabel: view.activityFilterLabel()
+              onCellClicked: function(index) { view.toggleActivityCell(index) }
+              onKindClicked: function(kind) { view.toggleActivityProvider(kind) }
+              onClearClicked: view.clearActivityFilter()
+            }
+          }
+          Card {
+            Layout.fillWidth: true
+            Layout.preferredWidth: 1
+            Layout.minimumWidth: 0
+            visible: view.sectionEnabled("github")
+            title: "GITHUB · LAST 7 DAYS"
+            hint: view.githubHint()
+            HeatPanel {
+              cells: view.github.cells || []
+              startTs: (view.github.days || [])[0] || 0
+              days: view.github.days || []
+              kinds: view.githubKinds
+              colorFor: function(kind) { return view.githubKindColor(kind) }
+              labelFor: function(kind) { return view.githubKindLabel(kind) }
+              unit: "events"
+              showRepos: true
+              kindFiltersCells: true
+              selectedCell: view.githubCellFilter
+              selectedKind: view.githubKindFilter
+              filterActive: view.githubFilterActive
+              filterLabel: view.githubFilterLabel()
+              idleStatus: view.githubStatus()
+              hoverStatus: "click to pin"
+              pinnedBreakdown: true
+              emptyText: view.github.state === "ok" ? "no GitHub activity in the last 7 days" : view.githubStatus()
+              onCellClicked: function(index) { view.toggleGithubCell(index) }
+              onKindClicked: function(kind) { view.toggleGithubKind(kind) }
+              onClearClicked: { view.githubCellFilter = -1; view.githubKindFilter = "" }
             }
           }
         }
