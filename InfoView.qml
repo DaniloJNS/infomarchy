@@ -143,6 +143,12 @@ Item {
   readonly property int rightColumnWidth: Math.round(Math.max(300, Math.min(0.28 * width, 560)))
   readonly property int pad: Style.spacing.xl
   readonly property int gap: Style.spacing.lg
+  // Three whole rows of the GITHUB · YOU columns (row pitch measured at 32 px
+  // on a 1080p eDP-1 at fontScale 1.17). The card sits above the only elastic
+  // element of the left column, so this is the knob that decides how much of
+  // RECENT TASKS it costs — and a height that is not a whole number of rows
+  // leaves a sliver at the bottom that reads as a glitch, not as "more below".
+  readonly property real githubYouListHeight: Math.round(82 * Style.fontScale)
   // Layout instrumentation — `omarchy-shell infomarchy geometry`. Widths the
   // layout actually settled on; read these before touching any constant.
   function geometryReport(): string {
@@ -322,6 +328,97 @@ Item {
     if (activityProviderFilter) parts.push(desk.providerLabel(activityProviderFilter))
     return parts.join(" · ")
   }
+
+  // ---- GITHUB · YOU -------------------------------------------------------
+  // The card is read-only and ambient: three lists of what is waiting on this
+  // account, each row a link. Acting on any of it happens in the browser.
+  readonly property var githubYou: ai.githubYou || ({})
+  readonly property var githubYouPrs: githubYou.prs || []
+  // One scrollable column holds the reviews owed and then the unread
+  // notifications, with a rule between them: they are different kinds of
+  // "someone is waiting", but they compete for the same glance, and two
+  // separately scrolling lists in half a card would each be two rows tall.
+  readonly property var githubYouInbox: {
+    var out = [], reviews = view.githubYou.reviews || [], notes = view.githubYou.notifications || []
+    for (var i = 0; i < reviews.length; i++) out.push({ kind: "review", row: reviews[i] })
+    if (reviews.length > 0 && notes.length > 0) out.push({ kind: "rule", row: null })
+    for (var j = 0; j < notes.length; j++) out.push({ kind: "note", row: notes[j] })
+    return out
+  }
+  // A row's CI verdict in one glyph. A pull request with no rollup at all and
+  // one whose checks have not reported yet both read as "·" — the difference
+  // is the colour, not the shape, because the column is two characters wide.
+  function githubCiMark(state) {
+    switch (String(state || "")) {
+      case "SUCCESS": return "✓"
+      case "FAILURE":
+      case "ERROR": return "✗"
+      default: return "·"
+    }
+  }
+  function githubCiTone(state) {
+    switch (String(state || "")) {
+      case "SUCCESS": return desk.green
+      case "FAILURE":
+      case "ERROR": return desk.red
+      case "PENDING":
+      case "EXPECTED": return desk.yellow
+      default: return textFaint
+    }
+  }
+  // GitHub's notification reasons, shortened to fit a Tag. Mirrors
+  // notificationReasonLabel() in github-inbox.ts; an unknown reason keeps its
+  // own slug so a new one stays legible.
+  function githubReasonLabel(reason) {
+    // Only a string is a reason; String({}) would render as "OBJECTOBJE".
+    if (typeof reason !== "string") return "NOTICE"
+    switch (reason) {
+      case "approval_requested": return "APPROVAL"
+      case "assign": return "ASSIGN"
+      case "author": return "AUTHOR"
+      case "ci_activity": return "CI"
+      case "comment": return "COMMENT"
+      case "invitation": return "INVITE"
+      case "manual": return "MANUAL"
+      case "member_feature_requested": return "FEATURE"
+      case "mention": return "MENTION"
+      case "review_requested": return "REVIEW"
+      case "security_advisory_credit":
+      case "security_alert": return "SECURITY"
+      case "state_change": return "STATE"
+      case "subscribed": return "WATCH"
+      case "team_mention": return "TEAM"
+      default: {
+        var slug = reason.replace(/[^A-Za-z_]/g, "").slice(0, 10)
+        return slug ? slug.toUpperCase().replace(/_/g, " ").trim() : "NOTICE"
+      }
+    }
+  }
+  // Why the card is empty or behind, in the same words as the heatmap's.
+  function githubYouStatus() {
+    switch (String(githubYou.state || "")) {
+      case "missing": return "gh not installed · pacman -S github-cli"
+      case "unauthenticated": return "gh not authenticated · run gh auth login"
+      case "pending": return "fetching your GitHub inbox…"
+      case "unavailable": return "GitHub unreachable · " + String(githubYou.error || "fetch failed")
+      case "stale": return "stale · " + String(githubYou.error || "fetch failed") + " · cached rows"
+      default: return ""
+    }
+  }
+  function githubYouHint() {
+    var state = String(githubYou.state || "")
+    // Anything but a working feed: the hint is the only place to say why, and
+    // a row of zeroes would read as "nothing waiting on you", which is a lie.
+    if (state !== "ok" && state !== "stale") return githubYouStatus()
+    var c = githubYou.counts || {}
+    // An envelope glyph (U+2709) is absent from the shipped JetBrainsMono
+    // Nerd Font: it fell back to a tofu box, and the wrong advance width
+    // elided the whole hint. U+2713/U+2717 below are in the font; a word is
+    // safe in whatever font the user has set.
+    return Number(c.open || 0) + " open · " + Number(c.draft || 0) + " draft · " + Number(c.ciFail || 0) + " CI✗ · " + Number(c.unread || 0) + " unread"
+  }
+  function openGithub(url) { if (view.desk.openUrl(url)) view.navigated() }
+  function shortRepo(repo) { return String(repo || "").replace(/^.*\//, "") }
 
   // ---- reusable pieces -------------------------------------------------------
   component Card: Rectangle {
@@ -684,6 +781,87 @@ Item {
         width: parent.width * Math.max(0, Math.min(1, fraction))
         height: parent.height; radius: parent.radius; color: tone
         Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+      }
+    }
+  }
+
+  // A ListView with the hand-drawn scrollbar RECENT TASKS grew: wheel travel
+  // that works from anywhere over the list (touchpads report tiny pixel
+  // deltas, mouse wheels 120 units a notch, and both need to feel immediate),
+  // a track that is also draggable, and a thumb sized to the content. Three
+  // lists use it now, so it lives here once instead of three times.
+  //
+  // The list is inset by the track's width rather than overlapping it, so a
+  // row's own hover and click never fight the scrollbar for the same pixels.
+  component ScrollList: Item {
+    id: scroller
+    property alias model: list.model
+    property alias delegate: list.delegate
+    property alias count: list.count
+    property alias contentY: list.contentY
+    property alias contentHeight: list.contentHeight
+    // Delegates size themselves from this, not from the ListView, so nothing
+    // has to know about the track.
+    readonly property real rowWidth: list.width
+    property real rowSpacing: Style.spacing.xs
+    readonly property real trackWidth: Math.max(12, Math.round(14 * Style.fontScale))
+    function applyWheel(wheel) {
+      var pixelY = wheel.pixelDelta ? Number(wheel.pixelDelta.y || 0) : 0
+      var angleY = wheel.angleDelta ? Number(wheel.angleDelta.y || 0) : 0
+      var delta = pixelY !== 0 ? pixelY * 2.75 : (angleY / 120) * Math.round(120 * Style.fontScale)
+      if (!isFinite(delta) || delta === 0) { wheel.accepted = false; return }
+      list.contentY = Math.max(0, Math.min(Math.max(0, list.contentHeight - list.height), list.contentY - delta))
+      wheel.accepted = true
+    }
+    ListView {
+      id: list
+      width: Math.max(0, scroller.width - scroller.trackWidth)
+      height: scroller.height
+      spacing: scroller.rowSpacing
+      clip: true
+      interactive: view.interactive
+      boundsBehavior: Flickable.StopAtBounds
+      flickableDirection: Flickable.VerticalFlick
+      maximumFlickVelocity: Math.round(6000 * Style.fontScale)
+      flickDeceleration: Math.round(1500 * Style.fontScale)
+      WheelHandler {
+        enabled: view.interactive
+        target: null
+        onWheel: function(event) { scroller.applyWheel(event) }
+      }
+    }
+    Rectangle {
+      id: track
+      visible: list.contentHeight > list.height && list.height > 0
+      width: scroller.trackWidth
+      radius: width / 2
+      color: trackMouse.containsMouse ? Util.alpha(view.desk.themeForeground, 0.09) : "transparent"
+      x: scroller.width - width
+      y: 0
+      height: list.height
+      function seek(pointerY) {
+        var usable = Math.max(1, height - thumb.height)
+        var ratio = Math.max(0, Math.min(1, (pointerY - thumb.height / 2) / usable))
+        list.contentY = ratio * Math.max(0, list.contentHeight - list.height)
+      }
+      Rectangle {
+        id: thumb
+        width: Math.max(6, Math.round(8 * Style.fontScale))
+        x: (parent.width - width) / 2
+        radius: width / 2
+        color: trackMouse.pressed ? view.desk.cyan : Util.alpha(view.desk.cyan, trackMouse.containsMouse ? 0.78 : 0.55)
+        y: Math.max(0, Math.min(parent.height - height, (list.contentY / Math.max(1, list.contentHeight - list.height)) * Math.max(0, parent.height - height)))
+        height: Math.max(Math.round(24 * Style.fontScale), parent.height * parent.height / Math.max(parent.height, list.contentHeight))
+      }
+      MouseArea {
+        id: trackMouse
+        anchors.fill: parent
+        enabled: view.interactive
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onWheel: function(wheel) { scroller.applyWheel(wheel) }
+        onPressed: function(mouse) { track.seek(mouse.y) }
+        onPositionChanged: function(mouse) { if (pressed) track.seek(mouse.y) }
       }
     }
   }
@@ -1186,6 +1364,145 @@ Item {
           }
         }
 
+        // ---- GITHUB · YOU: my open PRs, and what is waiting on me ----
+        // Deliberately short. RECENT TASKS below is the only elastic element
+        // in this column, so every pixel spent here comes out of it; both
+        // lists scroll instead of growing.
+        Card {
+          Layout.fillWidth: true
+          visible: view.sectionEnabled("githubYou")
+          title: "GITHUB · YOU"
+          hint: view.githubYouHint()
+          clip: true
+          RowLayout {
+            id: githubYouColumns
+            width: parent.width
+            spacing: view.gap
+            ColumnLayout {
+              Layout.fillWidth: true
+              Layout.preferredWidth: 1
+              Layout.minimumWidth: 0
+              Layout.alignment: Qt.AlignTop
+              spacing: Style.spacing.xs
+              PlainText { text: "MY PRS"; color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; font.letterSpacing: 1.2; font.bold: true }
+              ScrollList {
+                id: prScroll
+                Layout.fillWidth: true
+                Layout.preferredHeight: view.githubYouListHeight
+                model: view.githubYouPrs
+                delegate: Rectangle {
+                  id: prRow
+                  required property var modelData
+                  readonly property color tone: view.desk.magenta
+                  width: prScroll.rowWidth
+                  height: prLine.implicitHeight + Style.spacing.xs
+                  radius: view.radius
+                  color: prHover.hovered ? Util.alpha(prRow.tone, 0.14) : "transparent"
+                  border.color: prHover.hovered ? Util.alpha(prRow.tone, 0.5) : "transparent"
+                  border.width: prHover.hovered ? 1 : 0
+                  RowLayout {
+                    id: prLine
+                    anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; leftMargin: Style.spacing.sm; rightMargin: Style.spacing.sm }
+                    spacing: Style.spacing.sm
+                    PlainText { text: view.desk.ago(prRow.modelData.ts); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; Layout.preferredWidth: Math.round(24 * Style.fontScale); horizontalAlignment: Text.AlignRight }
+                    Tag { visible: prRow.modelData.isDraft === true; text: "DRAFT"; tone: view.textFaint }
+                    PlainText { text: view.shortRepo(prRow.modelData.repo); color: view.textDim; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight; Layout.maximumWidth: Math.round(74 * Style.fontScale) }
+                    PlainText { text: "#" + Number(prRow.modelData.number || 0); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption }
+                    Tag { visible: !!prRow.modelData.ticket; text: String(prRow.modelData.ticket || ""); tone: view.desk.blue }
+                    PlainText {
+                      Layout.fillWidth: true
+                      Layout.minimumWidth: 0
+                      text: String(prRow.modelData.title || "")
+                      color: view.desk.themeForeground
+                      font.family: view.mono; font.pixelSize: Style.font.bodySmall
+                      elide: Text.ElideRight; maximumLineCount: 1
+                    }
+                    PlainText { text: view.githubCiMark(prRow.modelData.ci); color: view.githubCiTone(prRow.modelData.ci); font.family: view.mono; font.pixelSize: Style.font.caption; font.bold: true }
+                    PlainText { visible: String(prRow.modelData.review || "") === "REVIEW_REQUIRED"; text: "REVIEW"; color: view.desk.yellow; font.family: view.mono; font.pixelSize: Style.font.caption; font.bold: true }
+                  }
+                  HoverHandler { id: prHover; enabled: view.interactive; cursorShape: Qt.PointingHandCursor }
+                  TapHandler { enabled: view.interactive; acceptedButtons: Qt.LeftButton; onTapped: view.openGithub(prRow.modelData.url) }
+                }
+                PlainText {
+                  anchors.centerIn: parent
+                  width: parent.width - Style.spacing.md * 2
+                  visible: view.githubYouPrs.length === 0
+                  text: String(view.githubYou.state || "") === "ok" ? "no open pull requests" : view.githubYouStatus()
+                  color: view.textFaint
+                  font.family: view.mono; font.pixelSize: Style.font.bodySmall
+                  horizontalAlignment: Text.AlignHCenter
+                  elide: Text.ElideRight
+                }
+              }
+            }
+            ColumnLayout {
+              Layout.fillWidth: true
+              Layout.preferredWidth: 1
+              Layout.minimumWidth: 0
+              Layout.alignment: Qt.AlignTop
+              spacing: Style.spacing.xs
+              PlainText { text: "REVIEW REQUESTS"; color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; font.letterSpacing: 1.2; font.bold: true }
+              ScrollList {
+                id: inboxScroll
+                Layout.fillWidth: true
+                Layout.preferredHeight: view.githubYouListHeight
+                model: view.githubYouInbox
+                delegate: Rectangle {
+                  id: inboxRow
+                  required property var modelData
+                  readonly property bool isRule: String(modelData.kind || "") === "rule"
+                  readonly property bool isNote: String(modelData.kind || "") === "note"
+                  readonly property var row: modelData.row || ({})
+                  readonly property color tone: inboxRow.isNote ? view.desk.cyan : view.desk.magenta
+                  width: inboxScroll.rowWidth
+                  height: inboxRow.isRule ? Math.round(9 * Style.fontScale) : inboxLine.implicitHeight + Style.spacing.xs
+                  radius: view.radius
+                  color: (!inboxRow.isRule && inboxHover.hovered) ? Util.alpha(inboxRow.tone, 0.14) : "transparent"
+                  border.color: (!inboxRow.isRule && inboxHover.hovered) ? Util.alpha(inboxRow.tone, 0.5) : "transparent"
+                  border.width: (!inboxRow.isRule && inboxHover.hovered) ? 1 : 0
+                  // Reviews owed above, unread notifications below.
+                  Rectangle {
+                    visible: inboxRow.isRule
+                    anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; leftMargin: Style.spacing.sm; rightMargin: Style.spacing.sm }
+                    height: 1
+                    color: Util.alpha(view.desk.themeForeground, 0.16)
+                  }
+                  RowLayout {
+                    id: inboxLine
+                    visible: !inboxRow.isRule
+                    anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; leftMargin: Style.spacing.sm; rightMargin: Style.spacing.sm }
+                    spacing: Style.spacing.sm
+                    Tag { visible: inboxRow.isNote; text: view.githubReasonLabel(inboxRow.row.reason); tone: view.desk.cyan }
+                    PlainText { text: view.shortRepo(inboxRow.row.repo); color: view.textDim; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight; Layout.maximumWidth: Math.round(74 * Style.fontScale) }
+                    PlainText { visible: !inboxRow.isNote; text: "#" + Number(inboxRow.row.number || 0); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption }
+                    PlainText {
+                      Layout.fillWidth: true
+                      Layout.minimumWidth: 0
+                      text: String(inboxRow.row.title || "")
+                      color: view.desk.themeForeground
+                      font.family: view.mono; font.pixelSize: Style.font.bodySmall
+                      elide: Text.ElideRight; maximumLineCount: 1
+                    }
+                    PlainText { text: view.desk.ago(inboxRow.row.ts); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; Layout.preferredWidth: Math.round(24 * Style.fontScale); horizontalAlignment: Text.AlignRight }
+                  }
+                  HoverHandler { id: inboxHover; enabled: view.interactive && !inboxRow.isRule; cursorShape: Qt.PointingHandCursor }
+                  TapHandler { enabled: view.interactive && !inboxRow.isRule; acceptedButtons: Qt.LeftButton; onTapped: view.openGithub(inboxRow.row.url) }
+                }
+                PlainText {
+                  anchors.centerIn: parent
+                  width: parent.width - Style.spacing.md * 2
+                  visible: view.githubYouInbox.length === 0
+                  text: String(view.githubYou.state || "") === "ok" ? "nothing waiting on you" : ""
+                  color: view.textFaint
+                  font.family: view.mono; font.pixelSize: Style.font.bodySmall
+                  horizontalAlignment: Text.AlignHCenter
+                  elide: Text.ElideRight
+                }
+              }
+            }
+          }
+        }
+
         // ---- recent prompts / task history ----
         Card {
           Layout.fillWidth: true
@@ -1227,34 +1544,12 @@ Item {
               MouseArea { anchors.fill: parent; anchors.margins: -Style.spacing.sm; cursorShape: Qt.PointingHandCursor; onClicked: { promptSearchInput.text = ""; promptSearchInput.forceActiveFocus() } }
             }
           }
-          ListView {
-            id: recentList
-            function applyWheel(wheel) {
-              var pixelY = wheel.pixelDelta ? Number(wheel.pixelDelta.y || 0) : 0
-              var angleY = wheel.angleDelta ? Number(wheel.angleDelta.y || 0) : 0
-              // Touchpads report tiny pixel deltas; mouse wheels report 120
-              // units per notch. Give both enough travel to feel immediate.
-              var delta = pixelY !== 0 ? pixelY * 2.75 : (angleY / 120) * Math.round(120 * Style.fontScale)
-              if (!isFinite(delta) || delta === 0) { wheel.accepted = false; return }
-              contentY = Math.max(0, Math.min(Math.max(0, contentHeight - height), contentY - delta))
-              wheel.accepted = true
-            }
+          ScrollList {
+            id: recentScroll
             y: promptSearchBox.height + Style.spacing.sm
-            width: parent.width - Math.round(14 * Style.fontScale)
+            width: parent.width
             height: Math.max(0, (parent.height > 0 ? parent.height : 300) - y)
             model: view.visibleRecentTasks
-            spacing: Style.spacing.xs
-            clip: true
-            interactive: view.interactive
-            boundsBehavior: Flickable.StopAtBounds
-            flickableDirection: Flickable.VerticalFlick
-            maximumFlickVelocity: Math.round(6000 * Style.fontScale)
-            flickDeceleration: Math.round(1500 * Style.fontScale)
-            WheelHandler {
-              enabled: view.interactive
-              target: null
-              onWheel: function(event) { recentList.applyWheel(event) }
-            }
             delegate: Rectangle {
               id: ri
               required property var modelData
@@ -1263,7 +1558,7 @@ Item {
               readonly property bool resumable: !live && view.desk.canResume(modelData.provider, modelData.session)
               readonly property bool pinned: view.settings.promptPinned(view.promptKey(modelData))
               readonly property color tone: view.desk.providerColor(modelData.provider)
-              width: recentList.width
+              width: recentScroll.rowWidth
               height: rrow.implicitHeight + Style.spacing.sm
               radius: view.radius
               color: (live || resumable) ? Util.alpha(tone, recentHover.hovered ? 0.16 : (live ? 0.07 : 0.025)) : "transparent"
@@ -1311,40 +1606,6 @@ Item {
                 acceptedButtons: Qt.RightButton
                 onTapped: view.selectedPrompt = ri.modelData
               }
-            }
-          }
-          Rectangle {
-            id: recentScrollTrack
-            visible: recentList.contentHeight > recentList.height && recentList.height > 0
-            width: Math.max(12, Math.round(14 * Style.fontScale))
-            radius: width / 2
-            color: scrollTrackMouse.containsMouse ? Util.alpha(view.desk.themeForeground, 0.09) : "transparent"
-            x: parent.width - width
-            y: recentList.y
-            height: recentList.height
-            function seek(pointerY) {
-              var usable = Math.max(1, height - recentScrollThumb.height)
-              var ratio = Math.max(0, Math.min(1, (pointerY - recentScrollThumb.height / 2) / usable))
-              recentList.contentY = ratio * Math.max(0, recentList.contentHeight - recentList.height)
-            }
-            Rectangle {
-              id: recentScrollThumb
-              width: Math.max(6, Math.round(8 * Style.fontScale))
-              x: (parent.width - width) / 2
-              radius: width / 2
-              color: scrollTrackMouse.pressed ? view.desk.cyan : Util.alpha(view.desk.cyan, scrollTrackMouse.containsMouse ? 0.78 : 0.55)
-              y: Math.max(0, Math.min(parent.height - height, (recentList.contentY / Math.max(1, recentList.contentHeight - recentList.height)) * Math.max(0, parent.height - height)))
-              height: Math.max(Math.round(24 * Style.fontScale), parent.height * parent.height / Math.max(parent.height, recentList.contentHeight))
-            }
-            MouseArea {
-              id: scrollTrackMouse
-              anchors.fill: parent
-              enabled: view.interactive
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onWheel: function(wheel) { recentList.applyWheel(wheel) }
-              onPressed: function(mouse) { recentScrollTrack.seek(mouse.y) }
-              onPositionChanged: function(mouse) { if (pressed) recentScrollTrack.seek(mouse.y) }
             }
           }
           PlainText {

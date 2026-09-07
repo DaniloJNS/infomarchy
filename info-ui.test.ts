@@ -7,6 +7,7 @@ const view = readFileSync(join(import.meta.dir, "InfoView.qml"), "utf8");
 const overlay = readFileSync(join(import.meta.dir, "Overlay.qml"), "utf8");
 const model = readFileSync(join(import.meta.dir, "InfoModel.qml"), "utf8");
 const service = readFileSync(join(import.meta.dir, "Infomarchy.qml"), "utf8");
+const collector = readFileSync(join(import.meta.dir, "collector.ts"), "utf8");
 
 describe("interactive information modules", () => {
   test("reordering skips hidden cards instead of producing a visual no-op", () => {
@@ -195,7 +196,10 @@ describe("github activity heatmap", () => {
   test("registers GITHUB as a removable module beside ACTIVITY and reaches it from the keyboard", () => {
     const ids = [...settings.matchAll(/\{ id: "([a-zA-Z]+)", label: "[^"]+" \}/g)].map(match => match[1]);
     expect(ids.indexOf("github")).toBe(ids.indexOf("activity") + 1);
-    expect(ids).toHaveLength(10);
+    // The number keys map definition indices 0-9, so the first ten are the
+    // keyboard-reachable ones and must keep their exact positions. Modules
+    // past the tenth are chip-only by design (see githubYou below).
+    expect(ids.slice(0, 10)).toEqual(["needs", "sessions", "activity", "github", "recent", "usage", "localAi", "machine", "changes", "projects"]);
     expect(overlay).toContain("event.key >= Qt.Key_0 && event.key <= Qt.Key_9");
     expect(overlay).toContain("event.key === Qt.Key_0 ? 9 : event.key - Qt.Key_1");
     // Key n toggles definitions[n-1]; 0 is the tenth. Documented as 4 = GITHUB, 0 = PROJECTS.
@@ -226,5 +230,128 @@ describe("github activity heatmap", () => {
     // A pinned GitHub cell keeps its breakdown in the status line once the pointer leaves it.
     expect(view).toContain("pinnedBreakdown: true");
     expect(view).toContain('"pinned · " + panel.cellLabel(panel.selectedCell)');
+  });
+});
+
+describe("GITHUB · YOU", () => {
+  test("registers an eleventh, chip-only module without touching the key map", () => {
+    expect(settings).toContain('{ id: "githubYou", label: "GITHUB · YOU" }');
+    const ids = [...settings.matchAll(/\{ id: "([a-zA-Z]+)", label: "[^"]+" \}/g)].map(match => match[1]);
+    // Last, so the ten keyboard-reachable indices keep their meaning.
+    expect(ids[ids.length - 1]).toBe("githubYou");
+    expect(ids.indexOf("githubYou")).toBeGreaterThan(9);
+    // The number keys still map 0-9 only, and the on-screen legend still says so.
+    expect(overlay).toContain("event.key === Qt.Key_0 ? 9 : event.key - Qt.Key_1");
+    expect(view).toContain('text: "1–9, 0 MODULES');
+    // It is a loose card in the left column, not an ops or right-column card.
+    expect(settings).toContain('property var rightOrder: ["usage", "localAi", "machine"]');
+    expect(settings).toContain('property var opsOrder: ["changes", "needs", "projects"]');
+    expect(settings).not.toContain('"githubYou", "');
+  });
+
+  test("draws the card between the heatmap row and RECENT TASKS", () => {
+    expect(view).toContain('title: "GITHUB · YOU"');
+    expect(view).toContain('visible: view.sectionEnabled("githubYou")');
+    const heat = view.indexOf('title: "GITHUB · LAST 7 DAYS"');
+    const you = view.indexOf('title: "GITHUB · YOU"');
+    const recent = view.indexOf('title: "RECENT TASKS · WHAT GOT ASKED"');
+    expect(heat).toBeGreaterThan(0);
+    expect(you).toBeGreaterThan(heat);
+    expect(recent).toBeGreaterThan(you);
+  });
+
+  test("two independently scrolling columns, both built from the shared ScrollList", () => {
+    expect(view).toContain("component ScrollList: Item");
+    expect(view).toContain('text: "MY PRS"');
+    expect(view).toContain('text: "REVIEW REQUESTS"');
+    // Three lists share one scrollbar implementation; the hand-rolled copy
+    // RECENT TASKS grew is gone, not duplicated per column.
+    expect(view.match(/ScrollList \{/g)).toHaveLength(3);
+    expect(view).not.toContain("recentScrollTrack");
+    expect(view).not.toContain("recentScrollThumb");
+    expect(view.match(/function applyWheel/g)).toHaveLength(1);
+    // Each column asks for an equal share and imposes no minimum.
+    expect(view.match(/Layout\.preferredHeight: view\.githubYouListHeight/g)).toHaveLength(2);
+  });
+
+  test("a PR row carries age, draft, short repo, number, ticket, title and CI", () => {
+    expect(view).toContain("view.desk.ago(prRow.modelData.ts)");
+    expect(view).toContain('text: "DRAFT"');
+    expect(view).toContain("view.shortRepo(prRow.modelData.repo)");
+    expect(view).toContain('"#" + Number(prRow.modelData.number || 0)');
+    expect(view).toContain("text: String(prRow.modelData.ticket || \"\")");
+    expect(view).toContain("view.githubCiMark(prRow.modelData.ci)");
+    expect(view).toContain('String(prRow.modelData.review || "") === "REVIEW_REQUIRED"');
+    // The owner is stripped from the repository, as RECENT TASKS does.
+    expect(view).toContain('function shortRepo(repo) { return String(repo || "").replace(/^.*\\//, "") }');
+    // The title is the only elastic cell, so it must elide on one line.
+    const prBlock = view.slice(view.indexOf("id: prRow"), view.indexOf("id: prHover"));
+    for (const line of prBlock.split("\n").filter(l => l.includes("Layout.fillWidth: true")))
+      expect(prBlock.slice(prBlock.indexOf(line))).toContain("elide: Text.ElideRight");
+  });
+
+  test("reviews sit above unread notifications, separated by a rule, in one list", () => {
+    expect(view).toContain("readonly property var githubYouInbox");
+    expect(view).toContain('out.push({ kind: "review", row: reviews[i] })');
+    expect(view).toContain('out.push({ kind: "rule", row: null })');
+    expect(view).toContain('out.push({ kind: "note", row: notes[j] })');
+    // The rule only appears when it actually separates two things.
+    expect(view).toContain("if (reviews.length > 0 && notes.length > 0)");
+    // A notification is tagged with its reason; a review is numbered.
+    expect(view).toContain("view.githubReasonLabel(inboxRow.row.reason)");
+    expect(view).toContain('visible: !inboxRow.isNote; text: "#" + Number(inboxRow.row.number || 0)');
+    // The rule is not clickable.
+    expect(view).toContain("enabled: view.interactive && !inboxRow.isRule");
+  });
+
+  test("a click opens the row in a browser and closes the overlay", () => {
+    expect(view).toContain("function openGithub(url) { if (view.desk.openUrl(url)) view.navigated() }");
+    expect(view).toContain("onTapped: view.openGithub(prRow.modelData.url)");
+    expect(view).toContain("onTapped: view.openGithub(inboxRow.row.url)");
+    expect(overlay).toContain("onNavigated: root.close()");
+    // The model validates the URL before anything is launched: https,
+    // github.com, and a launcher that takes one argument.
+    expect(model).toContain("function openUrl(url)");
+    expect(model).toContain("if (!canOpenUrl(url)) return false");
+    expect(model).toContain('Quickshell.execDetached(["omarchy-launch-browser", String(url)])');
+    expect(model).toContain("^https:\\/\\/github\\.com\\/");
+  });
+
+  test("the hint counts what is waiting, and says why when it cannot", () => {
+    expect(view).toContain("hint: view.githubYouHint()");
+    expect(view).toContain('" open · "');
+    expect(view).toContain('" draft · "');
+    expect(view).toContain('" CI✗ · "');
+    expect(view).toContain('" unread"');
+    // U+2709 is not in the shipped mono font; it rendered as tofu and broke
+    // the hint's elide. Only glyphs the font actually has may reach the card.
+    expect(view).not.toContain("✉");
+    // The same six states, with the same words, as the heatmap's status line.
+    for (const message of ["gh not installed", "gh not authenticated", "GitHub unreachable", "stale · "])
+      expect(view.slice(view.indexOf("function githubYouStatus"))).toContain(message);
+  });
+
+  test("demo mode invents every repository, ticket and author it shows", () => {
+    const demo = collector.slice(collector.indexOf("function demoSnapshot"), collector.indexOf("async function runCollector"));
+    expect(demo).toContain("const githubYou = {");
+    expect(demo).toContain("githubYou,");
+    // Demo mode exists so a screenshot can be published; the live card shows
+    // private employer repositories and issue keys, and neither may leak.
+    for (const real of ["infleet", "hermes", "INFLTECH", "DaniloJNS", "Rebase-BR", "railsdb"])
+      expect(demo).not.toContain(real);
+    // Every repository named is under the fictional demo owner.
+    for (const repo of [...demo.matchAll(/repo: "([^"]+)"/g)].map(match => match[1]))
+      expect(repo).toMatch(/^demo\//);
+    for (const url of [...demo.matchAll(/url: "(https:[^"]+)"/g)].map(match => match[1]))
+      expect(url).toMatch(/^https:\/\/github\.com\/demo\//);
+  });
+
+  test("only the wallpaper collector calls the API, so SUPER+D costs nothing", () => {
+    expect(collector).toContain('const GITHUB_INBOX_FILE = join(STATE_DIR, "github-inbox.json")');
+    // Same writer gate as the heatmap: the overlay reads the shared file.
+    const inbox = collector.slice(collector.indexOf("async function githubInbox"));
+    expect(inbox.slice(0, inbox.indexOf("\n}"))).toContain('GITHUB_WRITER && ghAvailable && process.env.INFOMARCHY_SKIP_GITHUB !== "1" && inboxRefreshDue(store, now)');
+    expect(collector).toContain('const GITHUB_WRITER = instanceId() !== "overlay"');
+    expect(collector).toContain("writePrivateStateFile(STATE_DIR, basename(GITHUB_INBOX_FILE)");
   });
 });

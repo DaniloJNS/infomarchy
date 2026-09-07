@@ -15,6 +15,7 @@ import { isIP } from "net";
 import { Database } from "bun:sqlite";
 import { localDayIndex, localDayStarts } from "./history-time";
 import { githubRefreshDue, githubSnapshot, parseGithubStoreText, refreshGithubActivity } from "./github-activity";
+import { inboxRefreshDue, inboxSnapshot, parseInboxStoreText, refreshInbox } from "./github-inbox";
 import { attentionSignal, parseCommitSummary, parseDiffNumstat, parseGitStatus, projectHealth, repoCollisions, workspaceGroups, resourceDelta, limitForecast } from "./ai-ops";
 import { deriveNotificationEvents } from "./notification-events";
 
@@ -32,6 +33,10 @@ const PREV_FILE = join(STATE_DIR, `prev-${instanceId()}.json`);
 // Shared by every collector instance: the GitHub rows are the same for the
 // wallpaper and the overlay, and one 7-day store means one set of API calls.
 const GITHUB_FILE = join(STATE_DIR, "github-activity.json");
+// The GITHUB · YOU lists. Separate from the heatmap store on purpose: a
+// different shape, a different cadence budget, and a corrupt one must not
+// cost the other its 7-day accumulation.
+const GITHUB_INBOX_FILE = join(STATE_DIR, "github-inbox.json");
 const now = Date.now();
 const MIN_RATE_DT = 1;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -354,6 +359,19 @@ async function githubActivity() {
     try { writePrivateStateFile(STATE_DIR, basename(GITHUB_FILE), JSON.stringify(store)); } catch {}
   }
   return githubSnapshot(store, now, heatDays, activityCellIndex, ghAvailable);
+}
+
+// GITHUB · YOU: open PRs, review requests, unread notifications (see
+// github-inbox.ts). Same writer rule as the heatmap above — only the wallpaper
+// instance fetches, so summoning the overlay never doubles the API calls.
+async function githubInbox() {
+  const ghAvailable = !!Bun.which("gh");
+  const store = parseInboxStoreText(read(GITHUB_INBOX_FILE));
+  if (GITHUB_WRITER && ghAvailable && process.env.INFOMARCHY_SKIP_GITHUB !== "1" && inboxRefreshDue(store, now)) {
+    await refreshInbox(store, now, run, ghAvailable);
+    try { writePrivateStateFile(STATE_DIR, basename(GITHUB_INBOX_FILE), JSON.stringify(store)); } catch {}
+  }
+  return inboxSnapshot(store, now, ghAvailable);
 }
 
 // ---------------------------------------------------------------- machine
@@ -2030,6 +2048,31 @@ function demoSnapshot(stamp = Date.now()) {
     }
   });
   const github = { state: "ok", login: "demo", fetchedAt: stamp - 90_000, coverage: "complete", coveredFrom: dayStarts[0], error: "", days: dayStarts, cells: githubCells, counts: githubCounts };
+  // GITHUB · YOU in demo mode. Every repository, ticket key, title, author and
+  // URL here is invented: demo mode exists so a screenshot can be published,
+  // and the live card shows private employer repositories and issue keys.
+  const demoPr = (number: number, repo: string, ticket: string, title: string, ageMs: number, extra: Record<string, unknown> = {}) => ({
+    number, repo, ticket, title, isDraft: false, ts: stamp - ageMs,
+    url: `https://github.com/${repo}/pull/${number}`, review: "", ci: "", ...extra,
+  });
+  const githubYou = {
+    state: "ok", login: "demo", fetchedAt: stamp - 90_000, error: "",
+    prs: [
+      demoPr(128, "demo/atlas", "DEMO-412", "Bounded snapshot transport for the collector", 2 * 3600_000, { isDraft: true, ci: "SUCCESS", review: "REVIEW_REQUIRED" }),
+      demoPr(94, "demo/orbit", "DEMO-408", "Retry the marketplace validation step", 5 * 3600_000, { ci: "FAILURE", review: "REVIEW_REQUIRED" }),
+      demoPr(61, "demo/beacon", "", "Sketch the local model picker", 26 * 3600_000, { isDraft: true }),
+      demoPr(126, "demo/atlas", "DEMO-399", "Prune the activity store to its window", 3 * 86400_000, { ci: "SUCCESS" }),
+    ],
+    reviews: [
+      { number: 93, repo: "demo/orbit", ticket: "", title: "Document the plugin permission model", ts: stamp - 6 * 3600_000, url: "https://github.com/demo/orbit/pull/93", author: "demo-reviewer" },
+      { number: 58, repo: "demo/beacon", ticket: "", title: "Fix the heatmap DST boundary", ts: stamp - 2 * 86400_000, url: "https://github.com/demo/beacon/pull/58", author: "octo-demo" },
+    ],
+    notifications: [
+      { id: "900000000001", repo: "demo/atlas", reason: "ci_activity", title: "CI workflow run failed for main branch", ts: stamp - 4 * 3600_000, url: "https://github.com/demo/atlas" },
+      { id: "900000000002", repo: "demo/orbit", reason: "mention", title: "You were mentioned in Plugin review checklist", ts: stamp - 30 * 3600_000, url: "https://github.com/demo/orbit/issues/77" },
+    ],
+    counts: { open: 4, draft: 2, ciFail: 1, unread: 2, reviews: 2 },
+  };
   const sessions = [
     {
       provider: "codex", pid: 42421, cwd: "~/Code/atlas", project: "atlas", startedAt: stamp - 38 * 60_000,
@@ -2114,7 +2157,7 @@ function demoSnapshot(stamp = Date.now()) {
         claude: { name: "Claude", ready: true, tierLabel: "Max", todayPrompts: 18, todayTotalTokens: 184_000, limits: [{ label: "SESSION", percent: 0.46, resetsAt: new Date(stamp + 2.1 * 3600_000).toISOString() }, { label: "WEEKLY", percent: 0.61, resetsAt: new Date(stamp + 3.4 * 86400_000).toISOString() }] },
         codex: { name: "Codex", ready: true, tierLabel: "Pro", todayPrompts: 27, todayTotalTokens: 311_000, limits: [{ label: "5-HOUR", percent: 0.38, resetsAt: new Date(stamp + 3.2 * 3600_000).toISOString() }, { label: "7-DAY", percent: 0.54, resetsAt: new Date(stamp + 4.2 * 86400_000).toISOString() }] },
       },
-      heatmap: { start: dayStarts[0], days: dayStarts, cells }, github, recent, recentTruncated: false,
+      heatmap: { start: dayStarts[0], days: dayStarts, cells }, github, githubYou, recent, recentTruncated: false,
     },
   };
 }
@@ -2125,8 +2168,8 @@ async function runCollector() {
     return;
   }
   const pids = scanProcs();
-  const [cpuS, memS, diskS, netS, pingS, gpuS, sessions, ollama, externalIpS, github] = await Promise.all([
-    Promise.resolve(cpu()), Promise.resolve(mem()), disk(), net(), ping(), gpu(), liveSessions(pids), ollamaState(), externalIp(), githubActivity(),
+  const [cpuS, memS, diskS, netS, pingS, gpuS, sessions, ollama, externalIpS, github, githubYou] = await Promise.all([
+    Promise.resolve(cpu()), Promise.resolve(mem()), disk(), net(), ping(), gpu(), liveSessions(pids), ollamaState(), externalIp(), githubActivity(), githubInbox(),
   ]);
   const claude = claudeHistory(), codex = codexHistory(), grok = grokHistory(), grokBot = grokBotHistory(), opencode = opencodeHistory();
   recent.sort((a, b) => b.ts - a.ts);
@@ -2165,6 +2208,7 @@ async function runCollector() {
       usageDays: heatDays.map(localDayKey),
       heatmap: { start: start7, days: heatDays, cells: heat.map(c => [c.n, c.p]) },
       github,
+      githubYou,
       recent: dashboardRecent, recentTruncated,
     },
   };

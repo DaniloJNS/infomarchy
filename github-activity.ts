@@ -89,7 +89,7 @@ export function validGithubLogin(value: unknown): string {
 }
 // owner/name as GitHub allows them; "." and ".." segments are never a repo
 // and must never reach a path or a query.
-function validRepo(value: unknown): string {
+export function validGithubRepo(value: unknown): string {
   if (typeof value !== "string") return "";
   const repo = value.trim();
   const match = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9_.-]{1,100})$/.exec(repo);
@@ -139,13 +139,13 @@ export function normalizeGithubStore(raw: unknown): GithubStore {
   const commits = source.commits && typeof source.commits === "object" && !Array.isArray(source.commits) ? source.commits as Record<string, unknown> : {};
   for (const [sha, row] of Object.entries(commits).slice(0, MAX_STORE_ROWS)) {
     if (!/^[0-9a-f]{7,64}$/.test(sha) || !Array.isArray(row)) continue;
-    const ts = finite(row[0]), repo = validRepo(row[1]);
+    const ts = finite(row[0]), repo = validGithubRepo(row[1]);
     if (ts && repo) store.commits[sha] = [ts, repo];
   }
   const events = source.events && typeof source.events === "object" && !Array.isArray(source.events) ? source.events as Record<string, unknown> : {};
   for (const [id, row] of Object.entries(events).slice(0, MAX_STORE_ROWS)) {
     if (!validEventId(id) || !Array.isArray(row)) continue;
-    const ts = finite(row[0]), kind = String(row[1] || ""), repo = validRepo(row[2]);
+    const ts = finite(row[0]), kind = String(row[1] || ""), repo = validGithubRepo(row[2]);
     if (ts && repo && (GITHUB_KINDS as readonly string[]).includes(kind) && kind !== "commit") store.events[id] = [ts, kind as GithubKind, repo];
   }
   return store;
@@ -219,7 +219,7 @@ export function parseGithubEvents(text: string): GithubEventItem[] | null {
   for (const row of rows.slice(0, 1000)) {
     if (!row || typeof row !== "object") continue;
     const entry = row as Record<string, unknown>;
-    const id = validEventId(entry.id), ts = stampOf(entry.ts), repo = validRepo(entry.repo);
+    const id = validEventId(entry.id), ts = stampOf(entry.ts), repo = validGithubRepo(entry.repo);
     if (!id || !ts || !repo) continue;
     result.push({ id, ts, kind: githubEventKind(entry.type), repo });
   }
@@ -240,7 +240,7 @@ export function parseGithubCommits(text: string): GithubCommitPage | null {
     if (!row || typeof row !== "object") continue;
     const entry = row as Record<string, unknown>;
     const sha = String(entry.sha ?? "").toLowerCase();
-    const ts = stampOf(entry.ts), repo = validRepo(entry.repo);
+    const ts = stampOf(entry.ts), repo = validGithubRepo(entry.repo);
     if (!/^[0-9a-f]{7,64}$/.test(sha) || !ts || !repo) continue;
     items.push({ sha, ts, repo });
   }

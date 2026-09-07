@@ -391,6 +391,20 @@ Item {
     Quickshell.execDetached(["bun", root.sessionActionsPath, String(cwd)])
     return true
   }
+  // The only outbound link the dashboard has: a GITHUB · YOU row opens its
+  // pull request or notification in the browser. Every other action here talks
+  // to hyprctl, tmux or a bun helper, so the allowlist is deliberately as
+  // narrow as the one feature needs — https, github.com, and nothing that
+  // could carry a second argument or a different scheme past the launcher.
+  function canOpenUrl(url) {
+    var value = String(url || "")
+    return value.length <= 400 && /^https:\/\/github\.com\/[A-Za-z0-9._~!$&'()*+,;=:@%\/-]*$/.test(value)
+  }
+  function openUrl(url) {
+    if (!canOpenUrl(url)) return false
+    Quickshell.execDetached(["omarchy-launch-browser", String(url)])
+    return true
+  }
   // Delete one successful preview artifact. The helper re-checks ownership,
   // parent directory, name shape and contents before touching anything; the
   // shell only hands it the path it was given by the capture.

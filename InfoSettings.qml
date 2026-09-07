@@ -19,7 +19,11 @@ Item {
     { id: "localAi", label: "LOCAL AI" },
     { id: "machine", label: "MACHINE" },
     { id: "changes", label: "CHANGES" },
-    { id: "projects", label: "PROJECTS" }
+    { id: "projects", label: "PROJECTS" },
+    // Eleventh, and last: the number keys 1-9,0 map to indices 0-9 and are
+    // spent, so this one has no shortcut. The chip is still clickable, and
+    // "1-9, 0 MODULES" on screen stays true for the ten that do.
+    { id: "githubYou", label: "GITHUB · YOU" }
   ]
   property var sections: ({})
   property var attentionMuted: ({})
