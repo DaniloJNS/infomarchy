@@ -822,7 +822,12 @@ export function linkRecentToLive(recentEntries: any[], sessions: any[]): any[] {
 }
 
 const TOPIC_STOP_WORDS = new Set([
-  "about", "add", "after", "again", "also", "and", "are", "audit", "basically", "been", "being", "build", "can", "cards", "check", "could", "create", "does", "doesnt", "doing", "dont", "fix", "for", "from", "had", "hard", "has", "have", "implement", "in", "into", "is", "it", "its", "just", "last", "little", "make", "more", "need", "needed", "not", "of", "on", "only", "other", "part", "past", "please", "prompt", "prompts", "real", "really", "remove", "review", "screen", "short", "should", "some", "still", "summary", "than", "that", "the", "their", "them", "there", "these", "they", "this", "those", "through", "to", "very", "want", "was", "were", "what", "when", "where", "which", "while", "with", "work", "working", "would", "your"
+  "about", "add", "after", "again", "also", "and", "are", "audit", "basically", "been", "being", "build", "can", "cards", "check", "could", "create", "does", "doesnt", "doing", "dont", "fix", "for", "from", "had", "hard", "has", "have", "implement", "in", "into", "is", "it", "its", "just", "last", "little", "make", "more", "need", "needed", "not", "of", "on", "only", "other", "part", "past", "please", "prompt", "prompts", "real", "really", "remove", "review", "screen", "short", "should", "some", "still", "summary", "than", "that", "the", "their", "them", "there", "these", "they", "this", "those", "through", "to", "very", "want", "was", "were", "what", "when", "where", "which", "while", "with", "work", "working", "would", "your",
+  // Portuguese. Without these the filler of a Portuguese prompt outranked its
+  // subject and cards read "Improving Hermes confirmado delega". The verbs are
+  // here for the same reason their English counterparts are: TOPIC_ACTIONS has
+  // already consumed them, so repeating one as a keyword says nothing.
+  "adiciona", "agora", "ainda", "ajusta", "algumas", "alguns", "ali", "antes", "apaga", "apenas", "após", "apos", "aqui", "aquele", "aquilo", "arruma", "assim", "até", "ate", "bem", "bom", "cada", "coisa", "coisas", "com", "como", "confere", "confirma", "confirmado", "conserta", "corrige", "cria", "das", "delega", "depois", "desde", "deve", "dos", "ela", "elas", "ele", "eles", "então", "entao", "entre", "era", "essa", "esse", "esta", "está", "estão", "este", "explica", "favor", "fazer", "faz", "fica", "ficou", "foi", "isso", "isto", "mais", "mas", "menos", "mesma", "mesmo", "meu", "meus", "minha", "minhas", "muito", "nao", "não", "nós", "nos", "nunca", "obrigado", "onde", "outra", "outras", "outro", "outros", "para", "pela", "pelas", "pelo", "pelos", "perfeito", "pode", "pois", "por", "porque", "pra", "precisa", "preciso", "pro", "qual", "quais", "quando", "que", "quem", "quero", "remove", "revisa", "sem", "sempre", "ser", "seu", "seus", "sim", "sob", "sobre", "somente", "sua", "suas", "talvez", "também", "tambem", "tem", "ter", "tipo", "toda", "todo", "tudo", "uma", "umas", "uns", "vai", "valeu", "vamos", "verifica", "você", "voce", "vou"
 ]);
 
 function topicProjectLabel(session: any): string {
@@ -839,20 +844,40 @@ function exactSessionEntries(session: any, recentEntries: any[]): any[] {
     .sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0)).slice(0, 5);
 }
 
+// The verb the card leads with, newest branch first. These were English-only,
+// so a desk driven in Portuguese fell through every branch to the "Improving"
+// default and all six cards read alike. Accented forms are spelled out because
+// this runs on the raw prompt, before TOPIC_TOKEN mangles anything.
+export const TOPIC_ACTIONS: Array<[string, RegExp]> = [
+  ["Summarizing", /\b(summar\w*|synopsis|topic|resum\w*|sumariz\w*|sinopse|t[óo]pico)\b/],
+  ["Simplifying", /\b(remove\w*|simplif\w*|declutter\w*|duplicate|dont want|don't want|only|remov\w*|apag\w*|exclu\w*|limp[ae]\w*|duplicad\w*|apenas|somente|n[ãa]o quero)\b/],
+  ["Fixing", /\b(fix\w*|bug|broken|hard to|doesnt|doesn't|issue|crash|error|scroll\w*|consert\w*|corrig\w*|arrum\w*|erro|falha|quebrad\w*|trav[ae]\w*|problema|n[ãa]o funciona)\b/],
+  ["Reviewing", /\b(audit|review|check|verify|inspect|revis\w*|verific\w*|confer\w*|valid[ae]\w*|checa\w*|analis\w*)\b/],
+  ["Researching", /\b(research\w*|compare|investigat\w*|find out|pesquis\w*|investig\w*|compar\w*|descobr\w*|entend\w*|explic\w*)\b/],
+  ["Building", /\b(add|build\w*|creat\w*|implement\w*|introduc\w*|make|adicion\w*|cri[ae]\w*|constru\w*|fa[zç]\w*|mont[ae]\w*|escrev\w*|ger[ae]\w*)\b/],
+];
+// Latin-1 letters count as letters. The old class stopped at the first accent,
+// so "ordenação" tokenized as "ordena", "você" as "voc", and "não" vanished
+// below the minimum length — none of which a stop-word list can filter.
+const TOPIC_TOKEN = /[a-zà-öø-ÿ][a-z0-9à-öø-ÿ-]{2,}/g;
+
+// The newest prompt that implies a verb. A bare "confirmado, delega pro X" or
+// "sim, faz o push" used to pick the verb for the whole card and discard the
+// request that actually described the work.
+export function topicActionSource(entries: any[]): string {
+  const texts = entries.map(entry => String(entry?.text || "").toLowerCase());
+  for (const text of texts) if (TOPIC_ACTIONS.some(([, pattern]) => pattern.test(text))) return text;
+  return texts[0] || "";
+}
+
 export function localSessionSummary(session: any, entries: any[]): string {
-  const text = entries.map(entry => String(entry.text || "")).join(" ").toLowerCase();
-  const latest = String(entries[0]?.text || "").toLowerCase();
-  const action = /\b(summar\w*|synopsis|topic)\b/.test(latest) ? "Summarizing" :
-    /\b(remove\w*|simplif\w*|declutter\w*|duplicate|dont want|don't want|only)\b/.test(latest) ? "Simplifying" :
-    /\b(fix\w*|bug|broken|hard to|doesnt|doesn't|issue|crash|error|scroll\w*)\b/.test(latest) ? "Fixing" :
-    /\b(audit|review|check|verify|inspect)\b/.test(latest) ? "Reviewing" :
-    /\b(research\w*|compare|investigat\w*|find out)\b/.test(latest) ? "Researching" :
-    /\b(add|build\w*|creat\w*|implement\w*|introduc\w*|make)\b/.test(latest) ? "Building" : "Improving";
+  const latest = topicActionSource(entries);
+  const action = (TOPIC_ACTIONS.find(([, pattern]) => pattern.test(latest)) || ["Improving"])[0];
   const aliases: Record<string, string> = { session: "sessions", scrolling: "scrolling", scroll: "scrolling", scrollbar: "scrolling", card: "cards", dashboard: "dashboard" };
   const scores = new Map<string, number>();
   entries.forEach((entry, index) => {
     const weight = Math.max(1, 5 - index);
-    for (const token of String(entry.text || "").toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) || []) {
+    for (const token of String(entry.text || "").toLowerCase().match(TOPIC_TOKEN) || []) {
       const word = aliases[token] || token;
       if (TOPIC_STOP_WORDS.has(word) || /^\d+$/.test(word)) continue;
       scores.set(word, (scores.get(word) || 0) + weight);

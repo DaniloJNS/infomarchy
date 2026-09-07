@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sy
 import { Database } from "bun:sqlite";
 import { tmpdir } from "os";
 import { join, relative } from "path";
-import { providerOf, titleLooksBusy, cmdIsTurnInhibitor, sessionIdFrom, sessionHostsFromEnvironment, tmuxSocketFromEnvironment, parseTmuxPanes, parseTmuxClients, tmuxPaneForAncestors, linkRecentToLive, inferSessionIdsFromRecent, attachSessionTopics, localSessionSummary, cleanGeneratedSummary, activityCellIndex, parseExternalIpTrace, externalIpCacheFresh, frameSnapshot, parseJsonBounded, readRegularFileLimited, safePrompt, sessionPresentation, writePrivateStateFile, decodeProjectDir, dropPartialFirstLine, readHistoryTail, readRegularFileHead, rolloutSessionId, rolloutCwd, topicCacheHit, topicRetryBlocked, pruneTopicCache, reapStateTempFiles, parseGpuLine, parseDfRows, plausibleTimestamp, normalizeUsage, normalizeUsageLimit, ollamaHostIsLocal, topicRefinementAllowed, terminate, rateForModel, estimateValue, valueSummary, alignDailyTokens, localDayKey, loadPricing, todayValueEstimate, herdrSocketFromEnvironment, herdrClientPids, herdrWindowFor, boomuxClientShellId, boomuxWindowFor, backgroundDaemonKind, parseClaudeAgents, sessionStaleness, STALE_AFTER_MS, decodeBase32, grokBotLine, grokBotRow, grokBotAttention, attachGrokBotRoster } from "./collector.ts";
+import { providerOf, titleLooksBusy, cmdIsTurnInhibitor, sessionIdFrom, sessionHostsFromEnvironment, tmuxSocketFromEnvironment, parseTmuxPanes, parseTmuxClients, tmuxPaneForAncestors, linkRecentToLive, inferSessionIdsFromRecent, attachSessionTopics, localSessionSummary, topicActionSource, cleanGeneratedSummary, activityCellIndex, parseExternalIpTrace, externalIpCacheFresh, frameSnapshot, parseJsonBounded, readRegularFileLimited, safePrompt, sessionPresentation, writePrivateStateFile, decodeProjectDir, dropPartialFirstLine, readHistoryTail, readRegularFileHead, rolloutSessionId, rolloutCwd, topicCacheHit, topicRetryBlocked, pruneTopicCache, reapStateTempFiles, parseGpuLine, parseDfRows, plausibleTimestamp, normalizeUsage, normalizeUsageLimit, ollamaHostIsLocal, topicRefinementAllowed, terminate, rateForModel, estimateValue, valueSummary, alignDailyTokens, localDayKey, loadPricing, todayValueEstimate, herdrSocketFromEnvironment, herdrClientPids, herdrWindowFor, boomuxClientShellId, boomuxWindowFor, backgroundDaemonKind, parseClaudeAgents, sessionStaleness, STALE_AFTER_MS, decodeBase32, grokBotLine, grokBotRow, grokBotAttention, attachGrokBotRoster } from "./collector.ts";
 import { sessionEventId } from "./notification-events.ts";
 
 const testRoot = mkdtempSync(join(tmpdir(), "infomarchy-test-"));
@@ -231,6 +231,52 @@ describe("live session topics", () => {
     const sessions = [{ provider: "codex", project: "~/Infomarchy", sessionIds: [] }];
     attachSessionTopics(sessions, [{ provider: "codex", session: "another", ts: 100, text: "wrong session" }]);
     expect(sessions[0]).toMatchObject({ topic: "Improving Infomarchy", topicAt: 0 });
+  });
+
+  // The cascades and the stop-word list were English-only, so every card on a
+  // Portuguese desk read "Improving <project> <filler>". These pin the parity.
+  test("a Portuguese prompt reaches the same verb as its English twin", () => {
+    const topic = (text: string) => localSessionSummary({ project: "~/hermes" }, [{ text }]);
+    expect(topic("adiciona um card novo no dashboard")).toStartWith("Building ");
+    expect(topic("add a new card to the dashboard")).toStartWith("Building ");
+    expect(topic("revisa esse PR por favor")).toBe("Reviewing Hermes");
+    expect(topic("review this PR please")).toBe("Reviewing Hermes");
+    expect(topic("conserta o erro do scroll")).toStartWith("Fixing ");
+    expect(topic("pesquisa como o Herdr expõe status")).toStartWith("Researching ");
+    expect(topic("remove essa duplicação")).toStartWith("Simplifying ");
+    expect(topic("resume o que essa sessão fez")).toStartWith("Summarizing ");
+  });
+
+  test("Portuguese filler loses its keyword slot, like English filler always did", () => {
+    const topic = localSessionSummary({ project: "~/hermes" }, [{ text: "confirmado, por favor adiciona o filtro de ocorrências" }]);
+    expect(topic).toStartWith("Building ");
+    for (const filler of ["confirmado", "por", "favor", "adiciona"]) expect(topic).not.toContain(filler);
+    expect(topic).toContain("filtro");
+    // "que" is the most common word in the language and the two-letter ones are
+    // already below the tokenizer's minimum, so it is the one that leaks.
+    expect(localSessionSummary({ project: "~/hermes" }, [{ text: "corrige o que quebrou na coluna" }]))
+      .toBe("Fixing Hermes quebrou coluna");
+  });
+
+  test("an accented word survives tokenizing whole instead of being truncated", () => {
+    // The old class stopped at the first non-ASCII byte: "ordenação" scored as
+    // "ordena" and "não" was too short to score at all.
+    expect(localSessionSummary({ project: "~/hermes" }, [{ text: "corrige a ordenação da coluna" }]))
+      .toBe("Fixing Hermes ordenação coluna");
+  });
+
+  test("the verb comes from the newest prompt that implies one, not from an acknowledgement", () => {
+    const entries = [
+      { text: "confirmado, delega pro plugins-a6" },
+      { text: "sim, pode ir" },
+      { text: "adiciona o card de PRs abertos" },
+    ];
+    expect(topicActionSource(entries)).toBe("adiciona o card de prs abertos");
+    expect(localSessionSummary({ project: "~/hermes" }, entries)).toStartWith("Building ");
+    // Nothing implies a verb anywhere: the newest prompt still decides, and the
+    // cascade's own default stands.
+    expect(topicActionSource([{ text: "confirmado" }, { text: "sim" }])).toBe("confirmado");
+    expect(localSessionSummary({ project: "~/hermes" }, [{ text: "confirmado" }])).toBe("Improving Hermes");
   });
 
   test("cleans and bounds local-model summaries", () => {
