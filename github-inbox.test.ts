@@ -63,8 +63,30 @@ describe("github inbox parsing", () => {
     expect(parsed!.login).toBe("octocat");
     expect(parsed!.prsTotal).toBe(3);
     expect(parsed!.reviewsTotal).toBe(1);
-    expect(parsed!.prs.map(pr => pr.number)).toEqual([4653, 4686, 4632]);   // updatedAt desc
+    expect(parsed!.prs.map(pr => pr.number)).toEqual([4632, 4653, 4686]);   // failing CI, then updatedAt desc
     expect(parsed!.reviews[0]).toMatchObject({ number: 4651, repo: "acme/hermes", author: "someone-else" });
+  });
+
+  // 4632 is the failing PR and also the least recently touched one, so plain
+  // newest-first put it third. MY PRS renders three rows on a 1080p desk, and
+  // the header already counted the failure — the card must not then hide it.
+  test("a failing build sorts above fresher PRs instead of below the fold", () => {
+    const prs = parseInboxGraphql(graphqlJson())!.prs;
+    expect(prs[0]).toMatchObject({ number: 4632, ci: "FAILURE" });
+    expect(prs.map(pr => pr.number)).toEqual([4632, 4653, 4686]);
+  });
+
+  test("ERROR counts as broken too, and ties fall back to newest-first", () => {
+    const parsed = parseInboxGraphql(graphqlJson({
+      prsTotal: 4,
+      prs: [
+        { number: 1, title: "old error", ts: iso(now - 50 * hour), url: "https://github.com/acme/hermes/pull/1", repo: "acme/hermes", ci: "ERROR" },
+        { number: 2, title: "fresh and green", ts: iso(now - hour), url: "https://github.com/acme/hermes/pull/2", repo: "acme/hermes", ci: "SUCCESS" },
+        { number: 3, title: "newer failure", ts: iso(now - 2 * hour), url: "https://github.com/acme/hermes/pull/3", repo: "acme/hermes", ci: "FAILURE" },
+        { number: 4, title: "pending is not broken", ts: iso(now - 3 * hour), url: "https://github.com/acme/hermes/pull/4", repo: "acme/hermes", ci: "PENDING" },
+      ],
+    }))!;
+    expect(parsed.prs.map(pr => pr.number)).toEqual([3, 1, 2, 4]);
   });
 
   test("draft is a flag on an open PR, not a state that gets filtered out", () => {
@@ -260,8 +282,9 @@ describe("inbox store on disk", () => {
     store.notifications = parseInboxNotifications(notificationsJson())!.rows;
     store.prsTotal = 3;
     const reloaded = parseInboxStoreText(JSON.stringify(store));
-    expect(reloaded.prs.map(pr => pr.number)).toEqual([4653, 4686, 4632]);
-    expect(reloaded.prs[0].ticket).toBe("INFLTECH-14351");
+    expect(reloaded.prs.map(pr => pr.number)).toEqual([4632, 4653, 4686]);
+    // By number, not by index: the order is the urgency order, not the input one.
+    expect(reloaded.prs.find(pr => pr.number === 4653)!.ticket).toBe("INFLTECH-14351");
     expect(reloaded.notifications.map(row => row.id)).toEqual(["25315046999", "25315046944"]);
     expect(reloaded.prsTotal).toBe(3);
   });

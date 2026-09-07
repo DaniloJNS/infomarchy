@@ -198,6 +198,20 @@ function oneOf(value: unknown, allowed: string[]): string {
 function newestFirst<T extends { ts: number }>(rows: T[]): T[] {
   return rows.sort((a, b) => b.ts - a.ts).slice(0, INBOX_MAX_ITEMS);
 }
+// MY PRS shows three rows on a 1080p desk, and a broken build is the whole
+// reason to glance at the column. Ordering purely by updated-at buried the one
+// failing PR whenever it was also the least recently touched: the header
+// counted it and the list then hid it below the fold. Failures come first;
+// within each group the newest still wins.
+const CI_BROKEN = ["ERROR", "FAILURE"];
+export function ciBroken(state: unknown): boolean {
+  return CI_BROKEN.includes(String(state ?? "").toUpperCase());
+}
+export function urgentFirst(rows: InboxPr[]): InboxPr[] {
+  return rows
+    .sort((a, b) => (ciBroken(a.ci) ? 0 : 1) - (ciBroken(b.ci) ? 0 : 1) || b.ts - a.ts)
+    .slice(0, INBOX_MAX_ITEMS);
+}
 
 // ---------------------------------------------------------------- parsing
 
@@ -254,7 +268,7 @@ export function parseInboxGraphql(text: string): InboxGraphql | null {
   for (const row of source.prs.slice(0, 200)) { const pr = inboxPr(row); if (pr) prs.push(pr); }
   for (const row of source.reviews.slice(0, 200)) { const review = inboxReview(row); if (review) reviews.push(review); }
   return {
-    prs: newestFirst(prs),
+    prs: urgentFirst(prs),
     reviews: newestFirst(reviews),
     // GitHub's totals are the honest count; the lists are capped for the card.
     prsTotal: Math.max(prs.length, Math.floor(finite(source.prsTotal))),
@@ -311,7 +325,7 @@ export function normalizeInboxStore(raw: unknown): InboxStore {
   for (const row of prs.slice(0, INBOX_MAX_ITEMS)) { const pr = inboxPr(row); if (pr) store.prs.push(pr); }
   for (const row of reviews.slice(0, INBOX_MAX_ITEMS)) { const review = inboxReview(row); if (review) store.reviews.push(review); }
   for (const row of notifications.slice(0, INBOX_MAX_ITEMS)) { const note = inboxNotification(row); if (note) store.notifications.push(note); }
-  store.prs = newestFirst(store.prs);
+  store.prs = urgentFirst(store.prs);
   store.reviews = newestFirst(store.reviews);
   store.notifications = newestFirst(store.notifications);
   store.prsTotal = Math.max(store.prs.length, Math.floor(finite(source.prsTotal)));
