@@ -18,6 +18,8 @@ import { githubRefreshDue, githubSnapshot, parseGithubStoreText, refreshGithubAc
 import { inboxRefreshDue, inboxSnapshot, parseInboxStoreText, refreshInbox } from "./github-inbox";
 import { attentionSignal, parseCommitSummary, parseDiffNumstat, parseGitStatus, projectHealth, repoCollisions, workspaceGroups, resourceDelta, limitForecast } from "./ai-ops";
 import { deriveNotificationEvents } from "./notification-events";
+import { fetchHerdrAgents, herdrAttention, herdrBusy, herdrPaneOf, herdrSocketsOf } from "./herdr-status";
+import { sendHerdrCommand, validHerdrSocket } from "./herdr-focus";
 
 const HOME = process.env.HOME || "/root";
 const XDG_STATE = process.env.XDG_STATE_HOME || join(HOME, ".local/state");
@@ -1381,15 +1383,25 @@ async function liveSessions(pids: number[]) {
       q = info(q.ppid);
     }
   }
+  // Herdr's own agent detection, joined on pane id (see herdr-status.ts). One
+  // 4-6 ms socket read per tick, and only when something is actually
+  // Herdr-hosted — otherwise the socket is never dialled at all.
+  const herdrAgents = await fetchHerdrAgents(herdrSocketsOf(sessions, validHerdrSocket("")), sendHerdrCommand);
   for (const s of sessions) {
     // A tmux window title describes the pane the client is showing. For a
     // pane that is not on screen, the title is somebody else's.
     const tmuxHostOf = (s.hosts || []).find((host: any) => host.kind === "tmux");
     if (tmuxHostOf && tmuxHostOf.attached && !tmuxHostOf.activePane && s.window) s.window = { ...s.window, title: "" };
     const titleBusy = !!(s.window && titleLooksBusy(s.window.title));
-    // Grok's terminal title sticks on 🧠 after the turn. Trust the inhibitor.
-    // Claude's registry status is authoritative when present.
+    // "" when Herdr does not host this session, or answered nothing at all.
+    const pane = herdrPaneOf(s);
+    s.herdrStatus = herdrAgents && pane && herdrAgents[pane] ? herdrAgents[pane].status : "";
+    // Herdr replaces the title regex, not the two facts: Claude's own registry
+    // stays authoritative, and the systemd turn inhibitor is a running turn
+    // whatever Herdr thinks it can see on screen.
+    const herdrSaysBusy = herdrBusy(s.herdrStatus || undefined);
     s.busy = s._registryBusy !== null && s._registryBusy !== undefined ? s._registryBusy
+      : herdrSaysBusy !== null ? (herdrSaysBusy || turnBusy.has(s.pid))
       : s.provider === "grok" ? turnBusy.has(s.pid) : (titleBusy || turnBusy.has(s.pid));
     if (!s.busy && s.window && titleLooksBusy(s.window.title) && s.provider === "grok")
       s.window = { ...s.window, title: "" };
@@ -1410,9 +1422,16 @@ async function liveSessions(pids: number[]) {
     session.git = repo?.state || null;
     session.changes = repo?.changes || null;
     session.ci = repo?.ci || null;
+    // Herdr saw the screen; the title regex only guessed at it. When Herdr
+    // classified this pane confidently its verdict stands, except for a merge
+    // conflict, which is a fact from git rather than a reading of a string.
+    const fromHerdr = session.herdrStatus
+      ? herdrAttention(session.herdrStatus, session.window?.title || herdrAgents?.[herdrPaneOf(session)]?.title, session.git?.conflicts || 0)
+      : { known: false, signal: null };
     // Title words like "permission" or "failed" describe the TASK while the
     // agent is still working. Only an idle agent can be blocked/waiting/done.
-    let signal = session.busy ? null : attentionSignal(session.window?.title, session.git?.conflicts || 0);
+    let signal = fromHerdr.known ? fromHerdr.signal
+      : session.busy ? null : attentionSignal(session.window?.title, session.git?.conflicts || 0);
     // Claude reporting "blocked" means it is waiting on the human — a real
     // signal, not a title guess.
     if (session._registryBlocked && !session.busy && (!signal || signal.state === "done"))
@@ -2075,8 +2094,35 @@ function demoSnapshot(stamp = Date.now()) {
   };
   const sessions = [
     {
+      // Herdr `done`: finished while the user was looking elsewhere. This is
+      // the state a title regex could never tell from an ordinary idle one.
+      provider: "claude", pid: 42577, cwd: "~/Code/relay", project: "relay", startedAt: stamp - 52 * 60_000,
+      uptimeSec: 52 * 60, session: "demo-relay-session", sessionIds: ["demo-relay-session"], busy: false, herdrStatus: "done",
+      topic: "Backfilling the ingest replay queue", topicAt: stamp - 6 * 60_000,
+      window: { address: "0xd004", title: "Ingest replay queue", class: "com.mitchellh.ghostty", workspace: 3 },
+      resources: { cpuPct: 0.4, rss: 342_884_352, processes: 3, gpuMemory: null },
+      repoRoot: "~/Code/relay", git: { branch: "feat/replay", dirty: 3, staged: 2, untracked: 0, files: ["ingest.ts", "replay.ts", "replay.test.ts"], ahead: 1, behind: 0, conflicts: 0 },
+      attention: "done", attentionReason: "finished work you have not seen", attentionAction: "review", attentionDetail: "Ingest replay queue",
+      hosts: [{ kind: "herdr", label: "Herdr w1 / w1:t2 / w1:p3", workspaceId: "w1", tabId: "w1:t2", paneId: "w1:p3" }],
+      changes: { fingerprint: "relay-demo-1", count: 3, staged: 2, untracked: 0, files: ["ingest.ts", "replay.ts", "replay.test.ts"], testFiles: 1, additions: 141, deletions: 12, head: "re1a4c00", headShort: "re1a4c0", commitSubject: "feat: replay the ingest queue", committedAt: stamp - 9 * 60_000 },
+      ci: { state: "success", name: "test", headSha: "re1a4c00", updatedAt: new Date(stamp - 7 * 60_000).toISOString(), checkedAt: stamp },
+    },
+    {
+      // Herdr `idle`: ready for input, and the user has already seen it.
+      provider: "gemini", pid: 42601, cwd: "~/Code/sonar", project: "sonar", startedAt: stamp - 3 * 3600_000,
+      uptimeSec: 3 * 3600, session: "demo-sonar-session", sessionIds: ["demo-sonar-session"], busy: false, herdrStatus: "idle",
+      topic: "Sketching the alert digest layout", topicAt: stamp - 41 * 60_000,
+      window: { address: "0xd005", title: "Alert digest layout", class: "kitty", workspace: 5 },
+      resources: { cpuPct: 0.1, rss: 214_748_364, processes: 2, gpuMemory: null },
+      repoRoot: "~/Code/sonar", git: { branch: "main", dirty: 0, staged: 0, untracked: 0, files: [], ahead: 0, behind: 0, conflicts: 0 },
+      attention: "", attentionReason: "", attentionAction: "", attentionDetail: "",
+      hosts: [{ kind: "herdr", label: "Herdr w1 / w1:t5 / w1:pA", workspaceId: "w1", tabId: "w1:t5", paneId: "w1:pA" }],
+      changes: { fingerprint: "sonar-demo-1", count: 0, staged: 0, untracked: 0, files: [], testFiles: 0, additions: 0, deletions: 0, head: "50na5000", headShort: "50na500", commitSubject: "docs: describe the digest", committedAt: stamp - 2 * 3600_000 },
+      ci: { state: "success", name: "lint", headSha: "50na5000", updatedAt: new Date(stamp - 2 * 3600_000).toISOString(), checkedAt: stamp },
+    },
+    {
       provider: "codex", pid: 42421, cwd: "~/Code/atlas", project: "atlas", startedAt: stamp - 38 * 60_000,
-      uptimeSec: 38 * 60, session: "demo-codex-session", sessionIds: ["demo-codex-session"], busy: true,
+      uptimeSec: 38 * 60, session: "demo-codex-session", sessionIds: ["demo-codex-session"], busy: true, herdrStatus: "working",
       topic: "Hardening atomic state persistence", topicAt: stamp - 90_000,
       window: { address: "0xd001", title: "Implementing bounded snapshot transport", class: "com.mitchellh.ghostty", workspace: 2 },
       resources: { cpuPct: 18.4, rss: 912_261_120, processes: 7, gpuMemory: null },
@@ -2088,7 +2134,7 @@ function demoSnapshot(stamp = Date.now()) {
     },
     {
       provider: "claude", pid: 42463, cwd: "~/Code/orbit", project: "orbit", startedAt: stamp - 74 * 60_000,
-      uptimeSec: 74 * 60, session: "demo-claude-session", sessionIds: ["demo-claude-session"], busy: false,
+      uptimeSec: 74 * 60, session: "demo-claude-session", sessionIds: ["demo-claude-session"], busy: false, herdrStatus: "blocked",
       topic: "Reviewing plugin submission checks", topicAt: stamp - 4 * 60_000,
       window: { address: "0xd002", title: "Waiting for marketplace review", class: "kitty", workspace: 4 },
       resources: { cpuPct: 2.1, rss: 604_241_920, processes: 5, gpuMemory: null },
@@ -2100,7 +2146,7 @@ function demoSnapshot(stamp = Date.now()) {
     },
     {
       provider: "opencode", pid: 42511, cwd: "~/Code/beacon", project: "beacon", startedAt: stamp - 16 * 60_000,
-      uptimeSec: 16 * 60, session: "demo-opencode-session", sessionIds: ["demo-opencode-session"], busy: true,
+      uptimeSec: 16 * 60, session: "demo-opencode-session", sessionIds: ["demo-opencode-session"], busy: true, herdrStatus: "working",
       topic: "Building interactive model controls", topicAt: stamp - 45_000,
       window: { address: "0xd003", title: "Local AI model controls", class: "Alacritty", workspace: 6 },
       resources: { cpuPct: 9.7, rss: 486_539_264, processes: 4, gpuMemory: 1_288_490_188 },
@@ -2141,7 +2187,7 @@ function demoSnapshot(stamp = Date.now()) {
       temp: 52, uptime: 186_300, externalIp: "203.0.113.42",
     },
     ai: {
-      sessions, projects: projectHealth(sessions), workspaces: workspaceGroups(sessions), attention: [sessions[1]], collisions: [],
+      sessions, projects: projectHealth(sessions), workspaces: workspaceGroups(sessions), attention: sessions.filter((s: any) => s.attention), collisions: [],
       counts: { claude: { today: 18, week: 96, total: 640 }, codex: { today: 27, week: 144, total: 1102 }, opencode: { today: 11, week: 51, total: 214 } },
       providers: {
         claude: { present: true, prompts: 640 }, codex: { present: true, prompts: 1102, threadCount: 37 },

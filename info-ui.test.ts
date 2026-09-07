@@ -8,6 +8,8 @@ const overlay = readFileSync(join(import.meta.dir, "Overlay.qml"), "utf8");
 const model = readFileSync(join(import.meta.dir, "InfoModel.qml"), "utf8");
 const service = readFileSync(join(import.meta.dir, "Infomarchy.qml"), "utf8");
 const collector = readFileSync(join(import.meta.dir, "collector.ts"), "utf8");
+const herdrStatus = readFileSync(join(import.meta.dir, "herdr-status.ts"), "utf8");
+const focus = readFileSync(join(import.meta.dir, "herdr-focus.ts"), "utf8");
 
 describe("interactive information modules", () => {
   test("reordering skips hidden cards instead of producing a visual no-op", () => {
@@ -353,5 +355,68 @@ describe("GITHUB · YOU", () => {
     expect(inbox.slice(0, inbox.indexOf("\n}"))).toContain('GITHUB_WRITER && ghAvailable && process.env.INFOMARCHY_SKIP_GITHUB !== "1" && inboxRefreshDue(store, now)');
     expect(collector).toContain('const GITHUB_WRITER = instanceId() !== "overlay"');
     expect(collector).toContain("writePrivateStateFile(STATE_DIR, basename(GITHUB_INBOX_FILE)");
+  });
+});
+
+describe("live session state comes from Herdr", () => {
+  test("the card's busy dot is the collector's verdict, not a title regex", () => {
+    expect(view).toContain("readonly property bool busy: modelData.busy === true");
+    // The guess this replaces. It overruled every real signal whenever an
+    // agent forgot to clear "Processing…" from its terminal title.
+    expect(view).not.toContain("/Processing|");
+  });
+
+  test("the collector joins Herdr's agent list on pane id, never on session id", () => {
+    expect(collector).toContain('import { fetchHerdrAgents, herdrAttention, herdrBusy, herdrPaneOf, herdrSocketsOf } from "./herdr-status"');
+    expect(collector).toContain("fetchHerdrAgents(herdrSocketsOf(sessions, validHerdrSocket(\"\")), sendHerdrCommand)");
+    expect(collector).toContain("const pane = herdrPaneOf(s)");
+    expect(collector).toContain("s.herdrStatus = herdrAgents && pane && herdrAgents[pane] ? herdrAgents[pane].status : \"\"");
+    // agent_session.value drifts across /rewind; joining there would invent a
+    // phantom card. It must not appear in the join at all.
+    expect(collector).not.toContain("agent_session");
+  });
+
+  test("Herdr replaces the title regex but not the two facts above it", () => {
+    const busy = collector.slice(collector.indexOf("const herdrSaysBusy"), collector.indexOf("// Each repo costs"));
+    // Claude's own registry still wins, and the systemd turn inhibitor is a
+    // running turn whatever Herdr believes it can see on screen.
+    expect(busy).toContain("s._registryBusy !== null && s._registryBusy !== undefined ? s._registryBusy");
+    expect(busy).toContain("herdrSaysBusy !== null ? (herdrSaysBusy || turnBusy.has(s.pid))");
+    expect(busy).toContain("(titleBusy || turnBusy.has(s.pid))");
+  });
+
+  test("a confident Herdr verdict outranks the attention regex", () => {
+    expect(collector).toContain("const fromHerdr = session.herdrStatus");
+    expect(collector).toContain("let signal = fromHerdr.known ? fromHerdr.signal");
+    // The old path stays for everything Herdr does not host or cannot classify.
+    expect(collector).toContain("session.busy ? null : attentionSignal(session.window?.title");
+  });
+
+  test("demo mode fabricates all four states and never opens the socket", () => {
+    const demo = collector.slice(collector.indexOf("function demoSnapshot"), collector.indexOf("async function runCollector"));
+    for (const status of ["working", "blocked", "done", "idle"])
+      expect(demo).toContain(`herdrStatus: "${status}"`);
+    // demoSnapshot is returned before any collection runs, so no socket is
+    // dialled; the states above are literals, not reads.
+    expect(demo).not.toContain("fetchHerdrAgents");
+    expect(collector).toContain('if (process.argv.includes("--demo"))');
+    // Enough cards that the session carousel actually has something to scroll.
+    expect((demo.match(/sessionIds: \[/g) || []).length).toBeGreaterThanOrEqual(5);
+    // The demo attention list is derived, not a hardcoded index that silently
+    // points at an idle session whenever the demo roster changes.
+    expect(demo).toContain("attention: sessions.filter((s: any) => s.attention)");
+  });
+
+  test("the socket is not dialled at all when nothing is Herdr-hosted", () => {
+    // A machine without Herdr must pay nothing for this feature.
+    expect(herdrStatus).toContain("if (!paths.length) return null");
+    expect(herdrStatus).toContain("export function herdrSocketsOf");
+  });
+
+  test("one read per tick, with a budget well inside the tick", () => {
+    expect(herdrStatus).toContain("export const HERDR_STATUS_TIMEOUT_MS = 600");
+    // Bun.connect throws synchronously on a malformed path; a rejection would
+    // take the whole collector tick down.
+    expect(focus).toContain("} catch { finish(null); }");
   });
 });

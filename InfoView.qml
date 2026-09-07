@@ -983,9 +983,12 @@ Item {
                 required property var modelData
                 required property int index
                 readonly property color tone: view.desk.providerColor(modelData.provider)
-                // Prefer collector.busy (Grok's title sticks on 🧠 after the turn).
-                // Fall back to the title regex for snapshots from an older collector.
-                readonly property bool busy: modelData.busy === true || (modelData.busy !== false && modelData.window && /Processing|🧠|⚙|⏳|…/.test(String(modelData.window.title || "")))
+                // The collector decides this, and no longer by reading the
+                // terminal title: Herdr reports the pane's real state, Claude's
+                // own registry reports its own, and the systemd turn inhibitor
+                // is a running turn. A title regex here would have overruled all
+                // three whenever an agent forgot to clear "Processing…".
+                readonly property bool busy: modelData.busy === true
                 property string previewSource: view.previewCache[String((sc.modelData.window || {}).address || "")] || ""
                 // Fill four columns when they remain readable; narrower layouts
                 // retain a minimum width and let Flow wrap naturally.
