@@ -11,6 +11,17 @@ import qs.Ui
 Scope {
   id: root
   property bool opened: false
+  // Same single output as the desk (Infomarchy.qml). Here the whole panel is
+  // dropped from the other screens rather than just the cards: an overlay is
+  // summoned, so an empty layer on the second monitor would only swallow
+  // clicks. Esc still closes it — the layer holds exclusive keyboard focus —
+  // but a click on another screen no longer does.
+  readonly property string deskScreenName: {
+    var want = Quickshell.env("INFOMARCHY_SCREEN") || "eDP-1"
+    var screens = Quickshell.screens
+    for (var i = 0; i < screens.length; i++) if (screens[i].name === want) return want
+    return screens.length > 0 ? screens[0].name : ""
+  }
 
   InfoModel { id: infoModel; refreshMs: 3000; active: root.opened; instance: "overlay"; demoMode: demoMarker.present }
   InfoSettings { id: dashboardSettings }
@@ -57,7 +68,7 @@ Scope {
       id: panel
       required property var modelData
       screen: modelData
-      visible: root.opened && !remapGuard.remapping
+      visible: root.opened && !remapGuard.remapping && modelData.name === root.deskScreenName
       anchors { top: true; bottom: true; left: true; right: true }
       color: "transparent"
       WlrLayershell.namespace: "infomarchy-overlay"

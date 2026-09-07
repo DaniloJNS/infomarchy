@@ -27,8 +27,20 @@ Scope {
   // the overlay (a separate Scope with its own InfoModel) sees the same mode,
   // and the file is removed on every shell start.
   property bool demoMode: false
-  // The desk view on the primary screen, for the geometry IPC.
+  // The desk view on the dashboard screen, for the geometry IPC.
   property var deskView: null
+  // The dashboard lives on exactly one output. The wallpaper still paints on
+  // every screen — this plugin replaces omarchy.background, so dropping the
+  // other panels would leave those monitors with no wallpaper at all — but the
+  // cards are drawn only here. Override with INFOMARCHY_SCREEN. Falls back to
+  // the first output when the preferred one is gone (lid closed), otherwise
+  // undocking to the laptop-less setup would hide the desk entirely.
+  readonly property string deskScreenName: {
+    var want = Quickshell.env("INFOMARCHY_SCREEN") || "eDP-1"
+    var screens = Quickshell.screens
+    for (var i = 0; i < screens.length; i++) if (screens[i].name === want) return want
+    return screens.length > 0 ? screens[0].name : ""
+  }
   readonly property string demoMarkerPath: (Quickshell.env("XDG_RUNTIME_DIR") || ("/run/user/" + Quickshell.env("UID"))) + "/infomarchy-demo"
   Process { id: demoMarkerWriter; property var pending: []; command: pending }
   function publishDemoMarker(on) {
@@ -169,6 +181,7 @@ Scope {
       id: panel
       required property var modelData
       screen: modelData
+      readonly property bool isDeskScreen: modelData.name === root.deskScreenName
       // Hyprland leaves a mapped layer at its old global origin when a monitor
       // moves (undock). Pulse unmapped so the compositor re-places us.
       visible: !remapGuard.remapping
@@ -192,9 +205,10 @@ Scope {
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
         cache: true
-        // Dimming belongs to the dashboard. When SUPER+I hides it, restore the
-        // wallpaper to full brightness instead of leaving an invisible shade.
-        opacity: dashboardSettings.ready && dashboardSettings.dashboardVisible ? root.wallpaperOpacity : 1.0
+        // Dimming belongs to the dashboard. When SUPER+I hides it — or on a
+        // screen the dashboard does not draw on — restore the wallpaper to full
+        // brightness instead of leaving an invisible shade.
+        opacity: panel.isDeskScreen && dashboardSettings.ready && dashboardSettings.dashboardVisible ? root.wallpaperOpacity : 1.0
         Behavior on opacity { NumberAnimation { duration: 300 } }
       }
 
@@ -221,8 +235,8 @@ Scope {
         settings: dashboardSettings
         interactive: true
         keyboardAvailable: false
-        Component.onCompleted: if (!root.deskView) root.deskView = this
-        visible: dashboardSettings.ready && dashboardSettings.dashboardVisible
+        Component.onCompleted: if (panel.isDeskScreen) root.deskView = this
+        visible: panel.isDeskScreen && dashboardSettings.ready && dashboardSettings.dashboardVisible
       }
     }
   }
