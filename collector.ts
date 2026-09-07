@@ -18,7 +18,7 @@ import { githubRefreshDue, githubSnapshot, parseGithubStoreText, refreshGithubAc
 import { inboxRefreshDue, inboxSnapshot, parseInboxStoreText, refreshInbox } from "./github-inbox";
 import { attentionSignal, parseCommitSummary, parseDiffNumstat, parseGitStatus, projectHealth, repoCollisions, workspaceGroups, resourceDelta, limitForecast } from "./ai-ops";
 import { deriveNotificationEvents } from "./notification-events";
-import { fetchHerdrAgents, herdrAttention, herdrBusy, herdrPaneOf, herdrSocketsOf, sortSessionsByUrgency } from "./herdr-status";
+import { fetchHerdrAgents, fetchHerdrPlaces, herdrAttention, herdrBusy, herdrPaneOf, herdrPlaceLabel, herdrSocketsOf, sortSessionsByUrgency } from "./herdr-status";
 import { sendHerdrCommand, validHerdrSocket } from "./herdr-focus";
 
 const HOME = process.env.HOME || "/root";
@@ -1438,7 +1438,21 @@ async function liveSessions(pids: number[]) {
   // Herdr's own agent detection, joined on pane id (see herdr-status.ts). One
   // 4-6 ms socket read per tick, and only when something is actually
   // Herdr-hosted — otherwise the socket is never dialled at all.
-  const herdrAgents = await fetchHerdrAgents(herdrSocketsOf(sessions, validHerdrSocket("")), sendHerdrCommand);
+  const herdrSockets = herdrSocketsOf(sessions, validHerdrSocket(""));
+  const [herdrAgents, herdrPlaces] = await Promise.all([
+    fetchHerdrAgents(herdrSockets, sendHerdrCommand),
+    fetchHerdrPlaces(herdrSockets, sendHerdrCommand),
+  ]);
+  // Names for the card, ids kept on the record for the focus path and the
+  // inspector. When Herdr named nothing the env-derived id label stands, so a
+  // socket that is down costs the names and nothing else.
+  for (const s of sessions) {
+    for (const host of s.hosts || []) {
+      if (!host || host.kind !== "herdr") continue;
+      const named = herdrPlaceLabel(host.workspaceId, host.tabId, herdrPlaces);
+      if (named) host.label = named;
+    }
+  }
   for (const s of sessions) {
     // A tmux window title describes the pane the client is showing. For a
     // pane that is not on screen, the title is somebody else's.

@@ -62,8 +62,16 @@ describe("interactive information modules", () => {
   test("shows multiplexer hosting context on live cards and the inspector", () => {
     expect(view).toContain("function sessionHostLabel");
     expect(view).toContain("function sessionHostDetail");
-    expect(view).toContain('text: "hosted in " + view.sessionHostLabel');
+    expect(view).toContain("text: view.sessionHostLabel");
     expect(view).toContain("view.sessionHostDetail(sessionInspector.session)");
+    // Names on the card, ids in the inspector: the card reads "herdr ~ › recover"
+    // while sessionHostDetail keeps the wB / wB:t1 / wB:p1 the click aims at.
+    expect(view).toContain('if (host.kind === "herdr") return "Herdr " + [host.workspaceId, host.tabId, host.paneId]');
+    // The click hint is conditional now. It was appended on every card, so the
+    // 25 identical characters elided away the one case worth reading.
+    expect(view).not.toContain('" · click jumps to the pane"');
+    expect(view).toContain('" · click attaches a terminal"');
+    expect(view).toContain('" · no client window found"');
   });
 
   test("offers safe selectable Ollama load and unload controls", () => {
@@ -185,7 +193,7 @@ describe("LOCAL AI rows stay inside the card body", () => {
 describe("session card lines never spill into the neighbouring card", () => {
   test("every fill-width single-line text in a session card elides", () => {
     const view = readFileSync(join(import.meta.dir, "InfoView.qml"), "utf8");
-    const start = view.indexOf("hosted in \" + view.sessionHostLabel(sc.modelData)");
+    const start = view.indexOf("text: view.sessionHostLabel(sc.modelData)");
     const block = view.slice(view.lastIndexOf("ColumnLayout", start), view.indexOf("\n                }", start));
     // The merged pid/cpu line had no elide: the taller first card's line ran under its
     // neighbour's git line ("git mainc·uclean · ram 360M"). Fill-width, one line ⇒ elide.
@@ -374,7 +382,15 @@ describe("live session state comes from Herdr", () => {
     expect(collector).toContain('from "./herdr-status"');
     for (const named of ["fetchHerdrAgents", "herdrAttention", "herdrBusy", "herdrPaneOf", "herdrSocketsOf"])
       expect(collector).toContain(named);
-    expect(collector).toContain("fetchHerdrAgents(herdrSocketsOf(sessions, validHerdrSocket(\"\")), sendHerdrCommand)");
+    // Sockets resolved once, then the status read and the place-name read go
+    // out together — three requests, one round trip, ~3-5 ms for all of them.
+    expect(collector).toContain("const herdrSockets = herdrSocketsOf(sessions, validHerdrSocket(\"\"))");
+    expect(collector).toContain("fetchHerdrAgents(herdrSockets, sendHerdrCommand)");
+    expect(collector).toContain("fetchHerdrPlaces(herdrSockets, sendHerdrCommand)");
+    // Names overwrite the env-derived id label only when Herdr supplied one,
+    // so a socket that is down costs the names and nothing else.
+    expect(collector).toContain("const named = herdrPlaceLabel(host.workspaceId, host.tabId, herdrPlaces)");
+    expect(collector).toContain("if (named) host.label = named");
     expect(collector).toContain("const pane = herdrPaneOf(s)");
     expect(collector).toContain("s.herdrStatus = herdrAgents && pane && herdrAgents[pane] ? herdrAgents[pane].status : \"\"");
     // agent_session.value drifts across /rewind; joining there would invent a
@@ -484,7 +500,7 @@ describe("the session carousel", () => {
     expect(card).toContain("sc.modelData.project");
     expect(card).toContain("sc.modelData.topic");
     expect(card).toContain('"git " + sc.modelData.git.branch');
-    expect(card).toContain('"hosted in " + view.sessionHostLabel(sc.modelData)');
+    expect(card).toContain("text: view.sessionHostLabel(sc.modelData)");
     // Gone: cwd duplicated the project, the window title duplicated the topic,
     // and the telemetry line repeated what MACHINE already reports.
     expect(card).not.toContain("text: sc.modelData.cwd");

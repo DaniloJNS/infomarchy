@@ -123,6 +123,103 @@ export async function fetchHerdrAgents(socketPaths: string[], send: HerdrSender,
   return merged;
 }
 
+// ---------------------------------------------------------------- places
+
+// The card used to print the coordinates the click aims at: "Herdr wB / wB:t1
+// / wB:p1". Those are the ids `pane.focus` needs, and they say nothing to the
+// person reading the desk — wB is not a place anyone recognises, and it
+// appears three times over because the tab and pane ids repeat it.
+//
+// Herdr already knows the names its own UI shows. `workspace.list` and
+// `tab.list` each carry a `label`, and the three reads together measured 3-5 ms
+// over the same socket, so the card can say "herdr ~ › recover" instead. The
+// ids stay on the host record: the focus path still needs them, and the
+// right-click inspector still prints them, which is where you want them when a
+// click misses.
+//
+// An unnamed tab labels itself with its ordinal ("4"), because that is what
+// Herdr's own UI shows for it. Matching the UI is the point, so that is
+// forwarded as-is rather than dressed up.
+const MAX_PLACE_LABEL = 48;
+export const HERDR_MAX_PLACES = 256;
+const HERDR_WORKSPACE_ID = /^w[A-Za-z0-9_-]{1,32}$/;
+const HERDR_TAB_ID = /^w[A-Za-z0-9_-]{1,32}:t[A-Za-z0-9_-]{1,32}$/;
+
+export type HerdrPlaces = { workspaces: Record<string, string>; tabs: Record<string, string> };
+
+export function herdrWorkspaceListRequest(): HerdrRequest {
+  return { id: "infomarchy:workspaces", method: "workspace.list", params: {} };
+}
+export function herdrTabListRequest(): HerdrRequest {
+  return { id: "infomarchy:tabs", method: "tab.list", params: {} };
+}
+
+// A label is a name a human typed; it reaches a Text element and nothing else,
+// but it is still stripped of control characters and bounded like every other
+// string the collector forwards.
+function placeLabel(value: unknown): string {
+  if (typeof value !== "string" && typeof value !== "number") return "";
+  return String(value).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_PLACE_LABEL);
+}
+
+function labelsById(result: unknown, collection: string, idField: string, valid: RegExp): Record<string, string> | null {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+  const rows = (result as Record<string, unknown>)[collection];
+  if (!Array.isArray(rows)) return null;
+  const labels: Record<string, string> = {};
+  for (const row of rows.slice(0, HERDR_MAX_PLACES)) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    const entry = row as Record<string, unknown>;
+    const id = String(entry[idField] || "");
+    if (!valid.test(id)) continue;
+    // Herdr falls back to the ordinal itself when nothing was named, so an
+    // empty label here means the row carried none at all — skip it and let
+    // the caller fall back to the id form rather than print a blank name.
+    const label = placeLabel(entry.label) || placeLabel(entry.number);
+    if (label) labels[id] = label;
+  }
+  return labels;
+}
+
+// Returns null when neither list arrived, so the caller keeps the id form
+// instead of showing a half-named line.
+export function parseHerdrPlaces(workspaceResult: unknown, tabResult: unknown): HerdrPlaces | null {
+  const workspaces = labelsById(workspaceResult, "workspaces", "workspace_id", HERDR_WORKSPACE_ID);
+  const tabs = labelsById(tabResult, "tabs", "tab_id", HERDR_TAB_ID);
+  if (!workspaces && !tabs) return null;
+  return { workspaces: workspaces || {}, tabs: tabs || {} };
+}
+
+export async function fetchHerdrPlaces(socketPaths: string[], send: HerdrSender, timeoutMs = HERDR_STATUS_TIMEOUT_MS): Promise<HerdrPlaces | null> {
+  const paths = [...new Set((socketPaths || []).filter(path => typeof path === "string" && path))];
+  if (!paths.length) return null;
+  const replies = await Promise.all(paths.map(path => Promise.all([
+    send(path, herdrWorkspaceListRequest(), timeoutMs).catch(() => null),
+    send(path, herdrTabListRequest(), timeoutMs).catch(() => null),
+  ]).then(([workspaces, tabs]) => parseHerdrPlaces(workspaces, tabs)).catch(() => null)));
+  let merged: HerdrPlaces | null = null;
+  for (const reply of replies) {
+    if (!reply) continue;
+    merged = {
+      workspaces: Object.assign(merged?.workspaces || {}, reply.workspaces),
+      tabs: Object.assign(merged?.tabs || {}, reply.tabs),
+    };
+  }
+  return merged;
+}
+
+// "herdr ~ › recover". The kind stays in front because a workspace can be
+// named "~", which alone reads as a path, and because a desk can host tmux and
+// Boomux sessions in the same row of cards. Returns "" when Herdr named
+// neither the workspace nor the tab, and the caller keeps the id form.
+export function herdrPlaceLabel(workspaceId: unknown, tabId: unknown, places: HerdrPlaces | null): string {
+  if (!places) return "";
+  const workspace = places.workspaces[String(workspaceId || "")] || "";
+  const tab = places.tabs[String(tabId || "")] || "";
+  const named = [workspace, tab].filter(Boolean).join(" \u203a ");
+  return named ? "herdr " + named : "";
+}
+
 // ---------------------------------------------------------------- verdicts
 
 // Herdr's `working` is the only status that means "producing output now".

@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   HERDR_MAX_AGENTS, HERDR_STATUS_TIMEOUT_MS, fetchHerdrAgents, herdrAgentListRequest,
-  herdrAttention, herdrBusy, herdrPaneOf, herdrSocketsOf, herdrStatusOf, parseHerdrAgents,
-  sessionUrgency,
+  herdrAttention, herdrBusy, herdrPaneOf, herdrPlaceLabel, herdrSocketsOf, herdrStatusOf,
+  fetchHerdrPlaces, herdrTabListRequest, herdrWorkspaceListRequest, parseHerdrAgents,
+  parseHerdrPlaces, sessionUrgency,
 } from "./herdr-status.ts";
 import { HERDR_TIMEOUT_MS } from "./herdr-focus.ts";
 
@@ -259,6 +260,73 @@ describe("reading the socket", () => {
   test("a garbled reply is null, not a crash", async () => {
     expect(await fetchHerdrAgents(["/run/a.sock"], async () => "<html>404</html>", 500)).toBeNull();
     expect(await fetchHerdrAgents(["/run/a.sock"], async () => ({ result: "nested wrong" }), 500)).toBeNull();
+  });
+});
+
+describe("the card says where a session lives, by name", () => {
+  const workspaces = { workspaces: [
+    { workspace_id: "wB", label: "~", number: 1 },
+    { workspace_id: "wD", label: "hermes", number: 2 },
+    { workspace_id: "nope", label: "rejected" },      // not a workspace id
+  ] };
+  const tabs = { tabs: [
+    { tab_id: "wB:t1", label: "recover", number: 1 },
+    { tab_id: "wD:t2", label: "onboarding photos obs", number: 2 },
+    { tab_id: "wD:t9", label: "", number: 4 },        // never named: Herdr shows the ordinal
+    { tab_id: "wB:p1", label: "a pane, not a tab" },  // wrong id shape
+  ] };
+
+  test("asks for both lists with no parameters", () => {
+    expect(herdrWorkspaceListRequest()).toEqual({ id: "infomarchy:workspaces", method: "workspace.list", params: {} });
+    expect(herdrTabListRequest()).toEqual({ id: "infomarchy:tabs", method: "tab.list", params: {} });
+  });
+
+  test("keeps the labels Herdr's own UI shows and refuses ids of the wrong shape", () => {
+    const places = parseHerdrPlaces(workspaces, tabs)!;
+    expect(places.workspaces).toEqual({ wB: "~", wD: "hermes" });
+    expect(places.tabs).toEqual({ "wB:t1": "recover", "wD:t2": "onboarding photos obs", "wD:t9": "4" });
+  });
+
+  test("renders workspace › tab, with the kind in front", () => {
+    const places = parseHerdrPlaces(workspaces, tabs)!;
+    // "~" alone reads as a path, and a desk can host tmux sessions in the same
+    // row of cards, so the kind stays in front.
+    expect(herdrPlaceLabel("wB", "wB:t1", places)).toBe("herdr ~ › recover");
+    expect(herdrPlaceLabel("wD", "wD:t2", places)).toBe("herdr hermes › onboarding photos obs");
+    expect(herdrPlaceLabel("wD", "wD:t9", places)).toBe("herdr hermes › 4");
+    // Half-known is better than nothing; unknown at all keeps the id form the
+    // collector already built from the environment.
+    expect(herdrPlaceLabel("wD", "wD:tZ", places)).toBe("herdr hermes");
+    expect(herdrPlaceLabel("wZ", "wZ:t1", places)).toBe("");
+    expect(herdrPlaceLabel("wB", "wB:t1", null)).toBe("");
+  });
+
+  test("a label is stripped of control characters and bounded", () => {
+    const places = parseHerdrPlaces({ workspaces: [{ workspace_id: "wB", label: "a\u0000b\nc   d" }] }, { tabs: [{ tab_id: "wB:t1", label: "x".repeat(200) }] })!;
+    expect(places.workspaces.wB).toBe("a b c d");
+    expect(places.tabs["wB:t1"].length).toBe(48);
+  });
+
+  test("neither list arriving is null, so the id form stands", async () => {
+    expect(parseHerdrPlaces(null, null)).toBeNull();
+    expect(parseHerdrPlaces("nonsense", 42)).toBeNull();
+    // One of the two is enough to name half the line.
+    expect(parseHerdrPlaces(workspaces, null)).toEqual({ workspaces: { wB: "~", wD: "hermes" }, tabs: {} });
+    expect(await fetchHerdrPlaces(["/run/a.sock"], async () => null, 500)).toBeNull();
+    expect(await fetchHerdrPlaces([], async () => workspaces, 500)).toBeNull();
+  });
+
+  test("reads each socket once and merges the places", async () => {
+    const asked: string[] = [];
+    const send = async (path: string, request: any) => {
+      asked.push(path + " " + request.method);
+      if (request.method === "workspace.list") return { workspaces: [{ workspace_id: path === "/run/a.sock" ? "wB" : "wD", label: path === "/run/a.sock" ? "~" : "hermes" }] };
+      return { tabs: [{ tab_id: path === "/run/a.sock" ? "wB:t1" : "wD:t1", label: path === "/run/a.sock" ? "recover" : "main" }] };
+    };
+    const places = await fetchHerdrPlaces(["/run/a.sock", "/run/b.sock", "/run/a.sock"], send, 500);
+    expect(asked.filter(entry => entry.startsWith("/run/a.sock")).length).toBe(2);   // deduplicated to one socket, two methods
+    expect(places!.workspaces).toEqual({ wB: "~", wD: "hermes" });
+    expect(places!.tabs).toEqual({ "wB:t1": "recover", "wD:t1": "main" });
   });
 });
 

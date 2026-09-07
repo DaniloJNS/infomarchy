@@ -1202,7 +1202,17 @@ Item {
                   elide: Text.ElideRight
                 }
                 PlainText { Layout.fillWidth: true; visible: !!sc.modelData.git; text: sc.modelData.git ? ("git " + sc.modelData.git.branch + (sc.modelData.git.dirty ? " · " + sc.modelData.git.dirty + " changed" : " · clean") + (sc.modelData.git.ahead ? " · ↑" + sc.modelData.git.ahead : "") + (sc.modelData.git.behind ? " · ↓" + sc.modelData.git.behind : "") + (sc.modelData.git.conflicts ? " · " + sc.modelData.git.conflicts + " conflicts" : "")) : ""; color: sc.modelData.git && sc.modelData.git.conflicts ? view.desk.red : sc.modelData.git && sc.modelData.git.dirty ? view.desk.yellow : view.desk.green; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
-                PlainText { Layout.fillWidth: true; visible: (sc.modelData.hosts || []).length > 0; text: "hosted in " + view.sessionHostLabel(sc.modelData) + (sc.modelData.window ? " · click jumps to the pane" : ((sc.modelData.hosts || []).some(function(h) { return h && h.kind === "background" && h.attachId }) ? " · click attaches a terminal" : " · no client window found")); color: sc.tone; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
+                // Where the session lives, by the names Herdr's own UI shows —
+                // "herdr ~ › recover", not the wB:t1:p1 the click aims at. The
+                // ids are on the host record still, and the right-click
+                // inspector prints them, which is where they help.
+                //
+                // The click hint is only appended when the click does something
+                // other than jump to the pane. It used to be there always, so
+                // 25 characters that were identical on every card pushed the
+                // one abnormal case — the click that does nothing — off the end
+                // of an elided line.
+                PlainText { Layout.fillWidth: true; visible: (sc.modelData.hosts || []).length > 0; text: view.sessionHostLabel(sc.modelData) + (sc.modelData.window ? "" : ((sc.modelData.hosts || []).some(function(h) { return h && h.kind === "background" && h.attachId }) ? " · click attaches a terminal" : " · no client window found")); color: sc.tone; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
               }
               MouseArea {
                 id: hover; anchors.fill: parent; hoverEnabled: true; enabled: view.interactive
