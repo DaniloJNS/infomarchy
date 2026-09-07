@@ -1569,11 +1569,12 @@ Item {
                     id: prLine
                     anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; leftMargin: Style.spacing.sm; rightMargin: Style.spacing.sm }
                     spacing: Style.spacing.sm
-                    PlainText { text: view.desk.ago(prRow.modelData.ts); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; Layout.preferredWidth: Math.round(24 * Style.fontScale); horizontalAlignment: Text.AlignRight }
-                    Tag { visible: prRow.modelData.isDraft === true; text: "DRAFT"; tone: view.textFaint }
+                    PlainText { text: view.desk.ago(prRow.modelData.ts); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; Layout.preferredWidth: Math.round(32 * Style.fontScale); horizontalAlignment: Text.AlignRight }
+                    // One letter, always present: a conditional tag shifted every
+                    // cell behind it, so draft rows and open rows never lined up.
+                    Tag { readonly property bool draft: prRow.modelData.isDraft === true; text: draft ? "D" : "O"; tone: draft ? view.textFaint : view.desk.magenta }
                     PlainText { text: view.shortRepo(prRow.modelData.repo); color: view.textDim; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight; Layout.maximumWidth: Math.round(74 * Style.fontScale) }
                     PlainText { text: "#" + Number(prRow.modelData.number || 0); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption }
-                    Tag { visible: !!prRow.modelData.ticket; text: String(prRow.modelData.ticket || ""); tone: view.desk.blue }
                     PlainText {
                       Layout.fillWidth: true
                       Layout.minimumWidth: 0
@@ -1637,6 +1638,19 @@ Item {
                     visible: !inboxRow.isRule
                     anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; leftMargin: Style.spacing.sm; rightMargin: Style.spacing.sm }
                     spacing: Style.spacing.sm
+                    // Age first, as in MY PRS: it is the column both lists are
+                    // scanned by, and it read as an afterthought on the right.
+                    // Four characters wide, not three: a review requested 588
+                    // days ago outgrew the old slot and pushed its own row out
+                    // of line. A preferred width with no maximum means a
+                    // freak five-character age shifts one row instead of
+                    // eliding to "109…".
+                    PlainText { text: view.desk.ago(inboxRow.row.ts); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; Layout.preferredWidth: Math.round(32 * Style.fontScale); horizontalAlignment: Text.AlignRight }
+                    // A review owed gets the one-letter tag that keeps the
+                    // repository column aligned with MY PRS; a notification
+                    // keeps its reason, which is the only thing explaining why
+                    // it is in the list at all.
+                    Tag { visible: !inboxRow.isNote; text: "R"; tone: inboxRow.tone }
                     Tag { visible: inboxRow.isNote; text: view.githubReasonLabel(inboxRow.row.reason); tone: view.desk.cyan }
                     PlainText { text: view.shortRepo(inboxRow.row.repo); color: view.textDim; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight; Layout.maximumWidth: Math.round(74 * Style.fontScale) }
                     PlainText { visible: !inboxRow.isNote; text: "#" + Number(inboxRow.row.number || 0); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption }
@@ -1648,7 +1662,6 @@ Item {
                       font.family: view.mono; font.pixelSize: Style.font.bodySmall
                       elide: Text.ElideRight; maximumLineCount: 1
                     }
-                    PlainText { text: view.desk.ago(inboxRow.row.ts); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; Layout.preferredWidth: Math.round(24 * Style.fontScale); horizontalAlignment: Text.AlignRight }
                   }
                   HoverHandler { id: inboxHover; enabled: view.interactive && !inboxRow.isRule; cursorShape: Qt.PointingHandCursor }
                   TapHandler { enabled: view.interactive && !inboxRow.isRule; acceptedButtons: Qt.LeftButton; onTapped: view.openGithub(inboxRow.row.url) }

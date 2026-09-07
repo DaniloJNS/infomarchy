@@ -288,12 +288,19 @@ describe("GITHUB · YOU", () => {
     expect(view.match(/Layout\.preferredHeight: view\.githubYouListHeight/g)).toHaveLength(2);
   });
 
-  test("a PR row carries age, draft, short repo, number, ticket, title and CI", () => {
+  test("a PR row carries age, state, short repo, number, title and CI", () => {
     expect(view).toContain("view.desk.ago(prRow.modelData.ts)");
-    expect(view).toContain('text: "DRAFT"');
+    // The state tag is one letter and unconditional. A tag that appeared only
+    // on drafts pushed the repository, number and title of every draft row
+    // sideways, so no two rows in the list started their title at the same x.
+    expect(view).toContain('text: draft ? "D" : "O"');
+    expect(view).not.toContain('text: "DRAFT"');
     expect(view).toContain("view.shortRepo(prRow.modelData.repo)");
     expect(view).toContain('"#" + Number(prRow.modelData.number || 0)');
-    expect(view).toContain("text: String(prRow.modelData.ticket || \"\")");
+    // The ticket key is still stripped off the title by splitTicket(), but it
+    // is no longer shown: repository, number and title already tell two of
+    // this account's pull requests apart, and the tag cost a third of the row.
+    expect(view).not.toContain("text: String(prRow.modelData.ticket || \"\")");
     expect(view).toContain("view.githubCiMark(prRow.modelData.ci)");
     expect(view).toContain('String(prRow.modelData.review || "") === "REVIEW_REQUIRED"');
     // The owner is stripped from the repository, as RECENT TASKS does.
@@ -314,6 +321,15 @@ describe("GITHUB · YOU", () => {
     // A notification is tagged with its reason; a review is numbered.
     expect(view).toContain("view.githubReasonLabel(inboxRow.row.reason)");
     expect(view).toContain('visible: !inboxRow.isNote; text: "#" + Number(inboxRow.row.number || 0)');
+    // Both columns are scanned by age, so both lead with it rather than
+    // trailing it, and a review carries the same one-letter tag width as a
+    // pull request so the two repository columns line up across the card.
+    const inboxBlock = view.slice(view.indexOf("id: inboxLine"), view.indexOf("id: inboxHover"));
+    expect(inboxBlock.indexOf("view.desk.ago(inboxRow.row.ts)")).toBeLessThan(inboxBlock.indexOf("view.shortRepo(inboxRow.row.repo)"));
+    expect(inboxBlock).toContain('Tag { visible: !inboxRow.isNote; text: "R"');
+    // Both age slots reserve the same width, or the two columns would agree on
+    // the order of their cells and still disagree on where the next one starts.
+    expect(view.match(/Layout\.preferredWidth: Math\.round\(32 \* Style\.fontScale\); horizontalAlignment: Text\.AlignRight/g)).toHaveLength(2);
     // The rule is not clickable.
     expect(view).toContain("enabled: view.interactive && !inboxRow.isRule");
   });
