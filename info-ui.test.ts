@@ -309,7 +309,13 @@ describe("GITHUB · YOU", () => {
     // this account's pull requests apart, and the tag cost a third of the row.
     expect(view).not.toContain("text: String(prRow.modelData.ticket || \"\")");
     expect(view).toContain("view.githubCiMark(prRow.modelData.ci)");
-    expect(view).toContain('String(prRow.modelData.review || "") === "REVIEW_REQUIRED"');
+    // Both review signals, not just branch protection's: a PR stacked on
+    // another feature branch has a null reviewDecision and a real reviewer.
+    expect(view).toContain('String(prRow.modelData.review || "") === "REVIEW_REQUIRED" || Number(prRow.modelData.reviewers || 0) > 0');
+    // "no checks ran" is an answer, so its dot has to be readable. In
+    // textFaint it looked like an empty cell, which claims something else.
+    expect(view).toContain("case \"EXPECTED\": return desk.yellow");
+    expect(view).not.toContain("case \"EXPECTED\": return desk.yellow\n      default: return textFaint");
     // The owner is stripped from the repository, as RECENT TASKS does.
     expect(view).toContain('function shortRepo(repo) { return String(repo || "").replace(/^.*\\//, "") }');
     // The title is the only elastic cell, so it must elide on one line.

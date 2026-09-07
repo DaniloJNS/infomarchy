@@ -380,7 +380,9 @@ Item {
       case "ERROR": return desk.red
       case "PENDING":
       case "EXPECTED": return desk.yellow
-      default: return textFaint
+      // "no checks ran" is a real answer and has to be legible: in textFaint
+      // the dot read as an empty cell, which is a different claim.
+      default: return textDim
     }
   }
   // GitHub's notification reasons, shortened to fit a Tag. Mirrors
@@ -1584,7 +1586,11 @@ Item {
                       elide: Text.ElideRight; maximumLineCount: 1
                     }
                     PlainText { text: view.githubCiMark(prRow.modelData.ci); color: view.githubCiTone(prRow.modelData.ci); font.family: view.mono; font.pixelSize: Style.font.caption; font.bold: true }
-                    PlainText { visible: String(prRow.modelData.review || "") === "REVIEW_REQUIRED"; text: "REVIEW"; color: view.desk.yellow; font.family: view.mono; font.pixelSize: Style.font.caption; font.bold: true }
+                    // Either signal means a review is outstanding. reviewDecision is
+                    // branch protection's answer, so it is null on a PR stacked
+                    // on another feature branch — and that was the one row here
+                    // with a reviewer actually assigned and nothing shown.
+                    PlainText { visible: String(prRow.modelData.review || "") === "REVIEW_REQUIRED" || Number(prRow.modelData.reviewers || 0) > 0; text: "REVIEW"; color: view.desk.yellow; font.family: view.mono; font.pixelSize: Style.font.caption; font.bold: true }
                   }
                   HoverHandler { id: prHover; enabled: view.interactive; cursorShape: Qt.PointingHandCursor }
                   TapHandler { enabled: view.interactive; acceptedButtons: Qt.LeftButton; onTapped: view.openGithub(prRow.modelData.url) }

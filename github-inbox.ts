@@ -12,7 +12,13 @@
 //     `isDraft` is carried through and the card labels it instead. The last
 //     commit's `statusCheckRollup` is the CI verdict, and it is null both for a
 //     PR no workflow has run on and for one whose checks have not reported, so
-//     a missing rollup is "no CI", never a failure. `viewer.login` rides along
+//     a missing rollup is "no CI", never a failure. `reviewDecision` rides
+//     next to `reviewRequests.totalCount` because on its own it is not the
+//     question the card asks. It answers "do this repository's rules still
+//     demand a review", which is branch protection, so it is null for a PR
+//     stacked on another feature branch — while a human is sitting in
+//     `reviewRequests` all the same. Either one outstanding means REVIEW.
+//     `viewer.login` rides along
 //     for free, which is what identifies the account the rows belong to — no
 //     separate `gh api user` call is needed while the query succeeds.
 //   * /notifications — unread, non-participating-filtered, one page (~0.6 s).
@@ -60,6 +66,7 @@ export type InboxPr = {
   url: string;
   repo: string;
   review: string;    // GitHub's reviewDecision, "" when it has none
+  reviewers: number; // outstanding review requests; reviewDecision misses these
   ci: string;        // statusCheckRollup state, "" when there is no rollup
 };
 export type InboxReview = {
@@ -231,6 +238,7 @@ function inboxPr(raw: unknown): InboxPr | null {
     isDraft: source.isDraft === true,
     url: validGithubUrl(source.url) || `https://github.com/${repo}/pull/${number}`,
     review: oneOf(source.review, REVIEW_DECISIONS),
+    reviewers: positiveInt(source.reviewers, 100),
     ci: oneOf(source.ci, CI_STATES),
   };
 }
@@ -355,6 +363,7 @@ query {
     pullRequests(states: OPEN, first: ${INBOX_MAX_ITEMS}, orderBy: {field: UPDATED_AT, direction: DESC}) {
       totalCount
       nodes { number title isDraft updatedAt url repository { nameWithOwner } reviewDecision
+        reviewRequests(first: 1) { totalCount }
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }
     }
   }
@@ -367,7 +376,7 @@ query {
 const INBOX_GRAPHQL_JQ = [
   "{login: .data.viewer.login,",
   "prsTotal: .data.viewer.pullRequests.totalCount,",
-  "prs: [.data.viewer.pullRequests.nodes[] | {number, title, isDraft, ts: .updatedAt, url, repo: .repository.nameWithOwner, review: .reviewDecision, ci: .commits.nodes[0].commit.statusCheckRollup.state}],",
+  "prs: [.data.viewer.pullRequests.nodes[] | {number, title, isDraft, ts: .updatedAt, url, repo: .repository.nameWithOwner, review: .reviewDecision, reviewers: .reviewRequests.totalCount, ci: .commits.nodes[0].commit.statusCheckRollup.state}],",
   "reviewsTotal: .data.reviews.issueCount,",
   "reviews: [.data.reviews.nodes[] | {number, title, isDraft, ts: .updatedAt, url, repo: .repository.nameWithOwner, author: .author.login}]}",
 ].join(" ");

@@ -14,15 +14,17 @@ const iso = (ts: number) => new Date(ts).toISOString().replace(/\.\d{3}Z$/, "Z")
 // The shapes below are the real payloads, verified against Danilo's gh on
 // 2026-09-06: a draft PR with a passing rollup, a PR with no rollup at all,
 // a failing one, a review request from another author, and the CheckSuite
-// notification whose subject.url is null.
+// notification whose subject.url is null. 4686 is the stacked one: based on
+// another feature branch, so branch protection has nothing to say and
+// reviewDecision is null even though a reviewer is assigned.
 function graphqlJson(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     login: "octocat",
     prsTotal: 3,
     prs: [
-      { number: 4653, title: "[INFLTECH-14351] Um caminho único para atribuir motorista", isDraft: true, ts: iso(now - 2 * hour), url: "https://github.com/acme/hermes/pull/4653", repo: "acme/hermes", review: "REVIEW_REQUIRED", ci: "SUCCESS" },
-      { number: 4686, title: "[ABC-15421] Filtro de divergência", isDraft: true, ts: iso(now - 3 * hour), url: "https://github.com/acme/hermes/pull/4686", repo: "acme/hermes", review: null, ci: null },
-      { number: 4632, title: "Ranking de candidatos", isDraft: false, ts: iso(now - 30 * hour), url: "https://github.com/acme/hermes/pull/4632", repo: "acme/hermes", review: "REVIEW_REQUIRED", ci: "FAILURE" },
+      { number: 4653, title: "[INFLTECH-14351] Um caminho único para atribuir motorista", isDraft: true, ts: iso(now - 2 * hour), url: "https://github.com/acme/hermes/pull/4653", repo: "acme/hermes", review: "REVIEW_REQUIRED", reviewers: 0, ci: "SUCCESS" },
+      { number: 4686, title: "[ABC-15421] Filtro de divergência", isDraft: true, ts: iso(now - 3 * hour), url: "https://github.com/acme/hermes/pull/4686", repo: "acme/hermes", review: null, reviewers: 1, ci: null },
+      { number: 4632, title: "Ranking de candidatos", isDraft: false, ts: iso(now - 30 * hour), url: "https://github.com/acme/hermes/pull/4632", repo: "acme/hermes", review: "REVIEW_REQUIRED", reviewers: 1, ci: "FAILURE" },
     ],
     reviewsTotal: 1,
     reviews: [
@@ -496,5 +498,38 @@ describe("the card's counts and states", () => {
     await refreshInbox(store, now, runner().run, true);
     expect(Object.keys(inboxSnapshot(store, now, true)).sort())
       .toEqual(["counts", "error", "fetchedAt", "login", "notifications", "prs", "reviews", "state"]);
+  });
+});
+
+describe("a review is outstanding whether or not branch protection says so", () => {
+  // reviewDecision answers "do this repository's rules still demand a review",
+  // which is a property of the base branch. PR 4686 is stacked on another
+  // feature branch, so it is null there — and that was the one row on the card
+  // with a human actually assigned and no REVIEW shown at all.
+  test("the query asks for the review requests, not just the decision", () => {
+    expect(INBOX_GRAPHQL_QUERY).toContain("reviewDecision");
+    expect(INBOX_GRAPHQL_QUERY).toContain("reviewRequests(first: 1) { totalCount }");
+  });
+
+  test("a null decision with a reviewer assigned still reports the reviewer", () => {
+    const parsed = parseInboxGraphql(graphqlJson());
+    const stacked = parsed!.prs.find(pr => pr.number === 4686)!;
+    expect(stacked.review).toBe("");
+    expect(stacked.reviewers).toBe(1);
+    // And the opposite shape: protection demands one, nobody is assigned yet.
+    const required = parsed!.prs.find(pr => pr.number === 4653)!;
+    expect(required.review).toBe("REVIEW_REQUIRED");
+    expect(required.reviewers).toBe(0);
+  });
+
+  test("the count is bounded and survives a round trip through the store", () => {
+    const parsed = parseInboxGraphql(graphqlJson({
+      prs: [{ number: 1234, title: "t", isDraft: false, ts: iso(now), url: "https://github.com/acme/hermes/pull/1234", repo: "acme/hermes", review: null, reviewers: 4000, ci: null }],
+    }));
+    expect(parsed!.prs[0]!.reviewers).toBe(0);   // over the limit is not a reviewer count
+    const store = emptyInboxStore();
+    store.prs = [{ ...parsed!.prs[0]!, reviewers: 2 }];
+    const reread = parseInboxStoreText(JSON.stringify(store));
+    expect(reread!.prs[0]!.reviewers).toBe(2);
   });
 });
