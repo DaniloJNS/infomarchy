@@ -389,8 +389,14 @@ describe("live session state comes from Herdr", () => {
     expect(collector).toContain("fetchHerdrPlaces(herdrSockets, sendHerdrCommand)");
     // Names overwrite the env-derived id label only when Herdr supplied one,
     // so a socket that is down costs the names and nothing else.
-    expect(collector).toContain("const named = herdrPlaceLabel(host.workspaceId, host.tabId, herdrPlaces)");
+    expect(collector).toContain("const named = herdrPlaceLabel(host.workspaceId, herdrPlaces)");
     expect(collector).toContain("if (named) host.label = named");
+    // The tab name is carried on the host so attachSessionIdentity can reach
+    // it later, and it is the card's identity line rather than the host line.
+    expect(collector).toContain("host.tabName = herdrTabName(host.tabId, herdrPlaces)");
+    expect(collector).toContain("attachSessionIdentity(sessions, recent)");
+    // Human authorship outranks the local model instead of racing it.
+    expect(collector).toContain("if (session.topicFromHuman) return");
     expect(collector).toContain("const pane = herdrPaneOf(s)");
     expect(collector).toContain("s.herdrStatus = herdrAgents && pane && herdrAgents[pane] ? herdrAgents[pane].status : \"\"");
     // agent_session.value drifts across /rewind; joining there would invent a

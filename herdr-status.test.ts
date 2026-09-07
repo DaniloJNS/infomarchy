@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   HERDR_MAX_AGENTS, HERDR_STATUS_TIMEOUT_MS, fetchHerdrAgents, herdrAgentListRequest,
   herdrAttention, herdrBusy, herdrPaneOf, herdrPlaceLabel, herdrSocketsOf, herdrStatusOf,
-  fetchHerdrPlaces, herdrTabListRequest, herdrWorkspaceListRequest, parseHerdrAgents,
-  parseHerdrPlaces, sessionUrgency,
+  fetchHerdrPlaces, herdrTabListRequest, herdrTabName, herdrWorkspaceListRequest,
+  parseHerdrAgents, parseHerdrPlaces, sessionUrgency,
 } from "./herdr-status.ts";
 import { HERDR_TIMEOUT_MS } from "./herdr-focus.ts";
 
@@ -287,18 +287,29 @@ describe("the card says where a session lives, by name", () => {
     expect(places.tabs).toEqual({ "wB:t1": "recover", "wD:t2": "onboarding photos obs", "wD:t9": "4" });
   });
 
-  test("renders workspace › tab, with the kind in front", () => {
+  test("the host line names the workspace, and only the workspace", () => {
     const places = parseHerdrPlaces(workspaces, tabs)!;
     // "~" alone reads as a path, and a desk can host tmux sessions in the same
     // row of cards, so the kind stays in front.
-    expect(herdrPlaceLabel("wB", "wB:t1", places)).toBe("herdr ~ › recover");
-    expect(herdrPlaceLabel("wD", "wD:t2", places)).toBe("herdr hermes › onboarding photos obs");
-    expect(herdrPlaceLabel("wD", "wD:t9", places)).toBe("herdr hermes › 4");
-    // Half-known is better than nothing; unknown at all keeps the id form the
-    // collector already built from the environment.
-    expect(herdrPlaceLabel("wD", "wD:tZ", places)).toBe("herdr hermes");
-    expect(herdrPlaceLabel("wZ", "wZ:t1", places)).toBe("");
-    expect(herdrPlaceLabel("wB", "wB:t1", null)).toBe("");
+    expect(herdrPlaceLabel("wB", places)).toBe("herdr ~");
+    expect(herdrPlaceLabel("wD", places)).toBe("herdr hermes");
+    // The tab name is deliberately absent: it moved to the identity line, and
+    // printing it twice on one card is what made the cards hard to tell apart.
+    expect(herdrPlaceLabel("wB", places)).not.toContain("recover");
+    // Unknown keeps the id form the collector already built from the environment.
+    expect(herdrPlaceLabel("wZ", places)).toBe("");
+    expect(herdrPlaceLabel("wB", null)).toBe("");
+  });
+
+  test("a tab labelled with its own ordinal was never named", () => {
+    const places = parseHerdrPlaces(workspaces, tabs)!;
+    expect(herdrTabName("wB:t1", places)).toBe("recover");
+    expect(herdrTabName("wD:t2", places)).toBe("onboarding photos obs");
+    // Herdr labels an unnamed tab with its number, so digits are the absence
+    // of a name — the caller must fall back to something describing the work.
+    expect(herdrTabName("wD:t9", places)).toBe("");
+    expect(herdrTabName("wD:tZ", places)).toBe("");
+    expect(herdrTabName("wD:t2", null)).toBe("");
   });
 
   test("a label is stripped of control characters and bounded", () => {

@@ -18,7 +18,7 @@ import { githubRefreshDue, githubSnapshot, parseGithubStoreText, refreshGithubAc
 import { inboxRefreshDue, inboxSnapshot, parseInboxStoreText, refreshInbox } from "./github-inbox";
 import { attentionSignal, parseCommitSummary, parseDiffNumstat, parseGitStatus, projectHealth, repoCollisions, workspaceGroups, resourceDelta, limitForecast } from "./ai-ops";
 import { deriveNotificationEvents } from "./notification-events";
-import { fetchHerdrAgents, fetchHerdrPlaces, herdrAttention, herdrBusy, herdrPaneOf, herdrPlaceLabel, herdrSocketsOf, sortSessionsByUrgency } from "./herdr-status";
+import { fetchHerdrAgents, fetchHerdrPlaces, herdrAttention, herdrBusy, herdrPaneOf, herdrPlaceLabel, herdrSocketsOf, herdrTabName, sortSessionsByUrgency } from "./herdr-status";
 import { sendHerdrCommand, validHerdrSocket } from "./herdr-focus";
 
 const HOME = process.env.HOME || "/root";
@@ -896,6 +896,49 @@ export function cleanGeneratedSummary(value: unknown): string {
     .replace(/\s+/g, " ").split(" ").slice(0, 8).join(" ").slice(0, 72).trim();
 }
 
+// The newest prompt that describes work instead of reacting to it. Four words
+// is the shortest thing on this desk that has ever read as a request; below
+// that an entry is "sim", "ok", "confirmado, delega pro plugins-a6". Bounded
+// so the card's identity line stays one line — two would grow every card in
+// the carousel, since the row is as tall as its tallest member.
+export const IDENTITY_PROMPT_MAX = 56;
+export function substantivePrompt(entries: any[]): string {
+  for (const entry of entries || []) {
+    const text = String(entry?.text || "").replace(/\s+/g, " ").trim();
+    if (text.split(" ").filter(Boolean).length >= 4) return text.slice(0, IDENTITY_PROMPT_MAX);
+  }
+  return "";
+}
+
+// What the card's second line says, in order of who authored it:
+//
+//   1. the name you gave the Herdr tab — "recover", "screen false positives".
+//      Stable, and the only source that is a statement of intent rather than a
+//      derivation. Five of six sessions on this desk have one.
+//   2. the newest substantive prompt, for a tab nobody named (Herdr labels
+//      those with an ordinal) or a session Herdr does not host. Volatile, but
+//      it describes the work — measured against the alternatives it was right
+//      exactly where the tab name was missing.
+//   3. localSessionSummary's phrase, as the last resort.
+//
+// The generated phrase used to be first, and it spent its four words on a verb
+// out of six, the project name that is already the line above it, and two
+// words scored by frequency across five chat messages. It could not tell one
+// session from another because bag-of-words over conversation does not
+// identify a task.
+export function attachSessionIdentity(sessions: any[], recentEntries: any[]): any[] {
+  for (const session of sessions || []) {
+    const host = (session.hosts || []).find((entry: any) => entry && entry.kind === "herdr" && entry.tabName);
+    const identity = (host && host.tabName) || substantivePrompt(exactSessionEntries(session, recentEntries));
+    if (!identity) continue;
+    session.topic = identity;
+    // Human authorship outranks the local model: refineSessionTopics skips
+    // these rather than spending a generate call to lose to them.
+    session.topicFromHuman = true;
+  }
+  return sessions;
+}
+
 export function attachSessionTopics(sessions: any[], recentEntries: any[]): any[] {
   for (const session of sessions) {
     const entries = exactSessionEntries(session, recentEntries);
@@ -988,6 +1031,7 @@ async function refineSessionTopics(sessions: any[], recentEntries: any[], ollama
     const ids = (session.sessionIds || []).map((value: any) => cleanSessionId(value)).filter(Boolean);
     const key = `${session.provider}:${ids[0] || session.pid}`;
     liveKeys.add(key);
+    if (session.topicFromHuman) return;
     if (!model) return;
     const fingerprint = String(Bun.hash(JSON.stringify(entries.map(entry => [entry.ts, entry.text]))));
     const cached = previous[key];
@@ -1449,8 +1493,11 @@ async function liveSessions(pids: number[]) {
   for (const s of sessions) {
     for (const host of s.hosts || []) {
       if (!host || host.kind !== "herdr") continue;
-      const named = herdrPlaceLabel(host.workspaceId, host.tabId, herdrPlaces);
+      const named = herdrPlaceLabel(host.workspaceId, herdrPlaces);
       if (named) host.label = named;
+      // Carried on the host so attachSessionIdentity can reach it later in the
+      // pipeline, where Herdr's reply is long out of scope.
+      host.tabName = herdrTabName(host.tabId, herdrPlaces);
     }
   }
   for (const s of sessions) {
@@ -2292,6 +2339,7 @@ async function runCollector() {
   for (const entry of recent) entry.activityCell = activityCellIndex(entry.ts, heatDays);
   inferSessionIdsFromRecent(sessions, recent);
   attachSessionTopics(sessions, recent);
+  attachSessionIdentity(sessions, recent);
   attachGrokBotRoster(sessions, grokBot);
   attachStaleness(sessions);
   const topicSummaries = await refineSessionTopics(sessions, recent, ollama);

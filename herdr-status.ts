@@ -208,16 +208,26 @@ export async function fetchHerdrPlaces(socketPaths: string[], send: HerdrSender,
   return merged;
 }
 
-// "herdr ~ › recover". The kind stays in front because a workspace can be
-// named "~", which alone reads as a path, and because a desk can host tmux and
-// Boomux sessions in the same row of cards. Returns "" when Herdr named
-// neither the workspace nor the tab, and the caller keeps the id form.
-export function herdrPlaceLabel(workspaceId: unknown, tabId: unknown, places: HerdrPlaces | null): string {
+// "herdr ~". The kind stays in front because a workspace can be named "~",
+// which alone reads as a path, and because a desk can host tmux and Boomux
+// sessions in the same row of cards. The tab name is NOT here: it moved up to
+// the card's identity line, where it answers "which session is this" — see
+// attachSessionIdentity in collector.ts. Repeating it in both places was the
+// duplication that made the cards hard to tell apart in the first place.
+export function herdrPlaceLabel(workspaceId: unknown, places: HerdrPlaces | null): string {
   if (!places) return "";
   const workspace = places.workspaces[String(workspaceId || "")] || "";
-  const tab = places.tabs[String(tabId || "")] || "";
-  const named = [workspace, tab].filter(Boolean).join(" \u203a ");
-  return named ? "herdr " + named : "";
+  return workspace ? "herdr " + workspace : "";
+}
+
+// The name a human gave a tab, or "" when nobody named it. Herdr labels an
+// unnamed tab with its own ordinal, so a label that is only digits is not a
+// name that happens to be a number — it is the absence of one, and the caller
+// has to fall back to something that describes the work.
+export function herdrTabName(tabId: unknown, places: HerdrPlaces | null): string {
+  if (!places) return "";
+  const label = places.tabs[String(tabId || "")] || "";
+  return label && !/^\d+$/.test(label) ? label : "";
 }
 
 // ---------------------------------------------------------------- verdicts

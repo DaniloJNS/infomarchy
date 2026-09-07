@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sy
 import { Database } from "bun:sqlite";
 import { tmpdir } from "os";
 import { join, relative } from "path";
-import { providerOf, titleLooksBusy, cmdIsTurnInhibitor, sessionIdFrom, sessionHostsFromEnvironment, tmuxSocketFromEnvironment, parseTmuxPanes, parseTmuxClients, tmuxPaneForAncestors, linkRecentToLive, inferSessionIdsFromRecent, attachSessionTopics, localSessionSummary, topicActionSource, cleanGeneratedSummary, activityCellIndex, parseExternalIpTrace, externalIpCacheFresh, frameSnapshot, parseJsonBounded, readRegularFileLimited, safePrompt, sessionPresentation, writePrivateStateFile, decodeProjectDir, dropPartialFirstLine, readHistoryTail, readRegularFileHead, rolloutSessionId, rolloutCwd, topicCacheHit, topicRetryBlocked, pruneTopicCache, reapStateTempFiles, parseGpuLine, parseDfRows, plausibleTimestamp, normalizeUsage, normalizeUsageLimit, ollamaHostIsLocal, topicRefinementAllowed, validCiBranch, terminate, rateForModel, estimateValue, valueSummary, alignDailyTokens, localDayKey, loadPricing, todayValueEstimate, herdrSocketFromEnvironment, herdrClientPids, herdrWindowFor, boomuxClientShellId, boomuxWindowFor, backgroundDaemonKind, parseClaudeAgents, sessionStaleness, STALE_AFTER_MS, decodeBase32, grokBotLine, grokBotRow, grokBotAttention, attachGrokBotRoster } from "./collector.ts";
+import { providerOf, titleLooksBusy, cmdIsTurnInhibitor, sessionIdFrom, sessionHostsFromEnvironment, tmuxSocketFromEnvironment, parseTmuxPanes, parseTmuxClients, tmuxPaneForAncestors, linkRecentToLive, inferSessionIdsFromRecent, attachSessionTopics, attachSessionIdentity, substantivePrompt, IDENTITY_PROMPT_MAX, localSessionSummary, topicActionSource, cleanGeneratedSummary, activityCellIndex, parseExternalIpTrace, externalIpCacheFresh, frameSnapshot, parseJsonBounded, readRegularFileLimited, safePrompt, sessionPresentation, writePrivateStateFile, decodeProjectDir, dropPartialFirstLine, readHistoryTail, readRegularFileHead, rolloutSessionId, rolloutCwd, topicCacheHit, topicRetryBlocked, pruneTopicCache, reapStateTempFiles, parseGpuLine, parseDfRows, plausibleTimestamp, normalizeUsage, normalizeUsageLimit, ollamaHostIsLocal, topicRefinementAllowed, validCiBranch, terminate, rateForModel, estimateValue, valueSummary, alignDailyTokens, localDayKey, loadPricing, todayValueEstimate, herdrSocketFromEnvironment, herdrClientPids, herdrWindowFor, boomuxClientShellId, boomuxWindowFor, backgroundDaemonKind, parseClaudeAgents, sessionStaleness, STALE_AFTER_MS, decodeBase32, grokBotLine, grokBotRow, grokBotAttention, attachGrokBotRoster } from "./collector.ts";
 import { sessionEventId } from "./notification-events.ts";
 
 const testRoot = mkdtempSync(join(tmpdir(), "infomarchy-test-"));
@@ -277,6 +277,54 @@ describe("live session topics", () => {
     // cascade's own default stands.
     expect(topicActionSource([{ text: "confirmado" }, { text: "sim" }])).toBe("confirmado");
     expect(localSessionSummary({ project: "~/hermes" }, [{ text: "confirmado" }])).toBe("Improving Hermes");
+  });
+
+  // The generated phrase spends its four words on a verb out of six, the
+  // project name that is already the line above it, and two words scored by
+  // frequency across five chat messages. It cannot tell one session from
+  // another, so a human-authored name outranks it.
+  test("the tab you named is the card's identity, ahead of anything derived", () => {
+    const sessions: any[] = [
+      { provider: "claude", project: "~/hermes", sessionIds: ["named-tab-0001"], hosts: [{ kind: "herdr", tabName: "screen false positives" }] },
+      { provider: "claude", project: "~/hermes", sessionIds: ["ordinal-tab-001"], hosts: [{ kind: "herdr", tabName: "" }] },
+      { provider: "claude", project: "~/hermes", sessionIds: ["no-herdr-host-1"], hosts: [] },
+    ];
+    const recent = [
+      { provider: "claude", session: "ordinal-tab-001", ts: 300, text: "colore todos clusters com mais de 10 viagens" },
+      { provider: "claude", session: "ordinal-tab-001", ts: 400, text: "sim, faz" },
+      { provider: "claude", session: "no-herdr-host-1", ts: 200, text: "ok" },
+    ];
+    attachSessionTopics(sessions, recent);
+    attachSessionIdentity(sessions, recent);
+    // Named tab wins outright.
+    expect(sessions[0].topic).toBe("screen false positives");
+    // Herdr labels an unnamed tab with its ordinal, so this one falls through
+    // to the prompt that describes the work — skipping the "sim, faz" above it.
+    expect(sessions[1].topic).toBe("colore todos clusters com mais de 10 viagens");
+    // Nothing human to use: the generated phrase stands, and is not claimed as
+    // human, so the local model may still refine it.
+    expect(sessions[2].topic).toStartWith("Improving ");
+    expect(sessions[0].topicFromHuman).toBe(true);
+    expect(sessions[1].topicFromHuman).toBe(true);
+    expect(sessions[2].topicFromHuman).toBeUndefined();
+  });
+
+  test("a substantive prompt is one that asks for something", () => {
+    expect(substantivePrompt([{ text: "sim" }, { text: "ok, pode ir" }, { text: "adiciona o card de PRs abertos" }]))
+      .toBe("adiciona o card de PRs abertos");
+    // Bounded so the identity line stays one line: two would grow every card
+    // in the carousel, which is as tall as its tallest member.
+    const long = substantivePrompt([{ text: "conserta a ordenação da coluna " + "x".repeat(200) }]);
+    expect(long.length).toBe(IDENTITY_PROMPT_MAX);
+    // One very long word is still one word: the four-word floor is about the
+    // shape of a request, not its length.
+    expect(substantivePrompt([{ text: "conserta " + "x".repeat(200) }])).toBe("");
+    expect(IDENTITY_PROMPT_MAX).toBeLessThanOrEqual(56);
+    // Whitespace collapsed, and nothing short enough to be an acknowledgement.
+    expect(substantivePrompt([{ text: "  revisa   esse   PR   agora  " }])).toBe("revisa esse PR agora");
+    expect(substantivePrompt([{ text: "sim" }, { text: "ok" }])).toBe("");
+    expect(substantivePrompt([])).toBe("");
+    expect(substantivePrompt(null as any)).toBe("");
   });
 
   test("cleans and bounds local-model summaries", () => {
