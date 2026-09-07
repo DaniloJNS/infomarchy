@@ -1572,7 +1572,7 @@ Item {
                     PlainText { text: view.desk.ago(prRow.modelData.ts); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; Layout.preferredWidth: Math.round(32 * Style.fontScale); horizontalAlignment: Text.AlignRight }
                     // One letter, always present: a conditional tag shifted every
                     // cell behind it, so draft rows and open rows never lined up.
-                    Tag { readonly property bool draft: prRow.modelData.isDraft === true; text: draft ? "D" : "O"; tone: draft ? view.textFaint : view.desk.magenta }
+                    Tag { readonly property bool draft: prRow.modelData.isDraft === true; text: draft ? "D" : "O"; tone: draft ? view.textFaint : view.desk.green }
                     PlainText { text: view.shortRepo(prRow.modelData.repo); color: view.textDim; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight; Layout.maximumWidth: Math.round(74 * Style.fontScale) }
                     PlainText { text: "#" + Number(prRow.modelData.number || 0); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption }
                     PlainText {
@@ -1650,7 +1650,7 @@ Item {
                     // repository column aligned with MY PRS; a notification
                     // keeps its reason, which is the only thing explaining why
                     // it is in the list at all.
-                    Tag { visible: !inboxRow.isNote; text: "R"; tone: inboxRow.tone }
+                    Tag { visible: !inboxRow.isNote; text: "R"; tone: view.desk.orange }
                     Tag { visible: inboxRow.isNote; text: view.githubReasonLabel(inboxRow.row.reason); tone: view.desk.cyan }
                     PlainText { text: view.shortRepo(inboxRow.row.repo); color: view.textDim; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight; Layout.maximumWidth: Math.round(74 * Style.fontScale) }
                     PlainText { visible: !inboxRow.isNote; text: "#" + Number(inboxRow.row.number || 0); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption }

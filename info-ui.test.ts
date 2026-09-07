@@ -294,6 +294,13 @@ describe("GITHUB · YOU", () => {
     // on drafts pushed the repository, number and title of every draft row
     // sideways, so no two rows in the list started their title at the same x.
     expect(view).toContain('text: draft ? "D" : "O"');
+    // Green for an open pull request, faint for a draft, and orange for a
+    // review owed: the three states are told apart by colour before the letter
+    // is read. Orange is not an ANSI slot, so InfoModel falls it back to the
+    // theme's yellow rather than to the accent.
+    expect(view).toContain('tone: draft ? view.textFaint : view.desk.green');
+    expect(view).toContain('text: "R"; tone: view.desk.orange');
+    expect(model).toContain('orange = pick(["orange", "color3", "yellow"], yellow)');
     expect(view).not.toContain('text: "DRAFT"');
     expect(view).toContain("view.shortRepo(prRow.modelData.repo)");
     expect(view).toContain('"#" + Number(prRow.modelData.number || 0)');

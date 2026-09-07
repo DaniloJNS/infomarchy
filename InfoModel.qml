@@ -49,6 +49,10 @@ Item {
   // with fallbacks so any theme works even if it omits a key.
   property color green: Color.accent
   property color yellow: Color.foreground
+  // Not one of the eight ANSI slots, so themes that skip it fall back to the
+  // yellow one rather than to the accent: an "orange" that came out blue
+  // would read as a different meaning, not as a missing colour.
+  property color orange: Color.foreground
   property color red: Color.urgent
   property color blue: Color.accent
   property color magenta: Color.accent
@@ -69,6 +73,7 @@ Item {
     }
     green = pick(["green", "color2"], Color.accent)
     yellow = pick(["yellow", "color3"], Color.foreground)
+    orange = pick(["orange", "color3", "yellow"], yellow)
     red = pick(["red", "color1"], Color.urgent)
     blue = pick(["blue", "color4"], Color.accent)
     magenta = pick(["magenta", "color5"], Color.accent)
