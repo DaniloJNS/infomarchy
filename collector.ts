@@ -18,7 +18,7 @@ import { githubRefreshDue, githubSnapshot, parseGithubStoreText, refreshGithubAc
 import { inboxRefreshDue, inboxSnapshot, parseInboxStoreText, refreshInbox } from "./github-inbox";
 import { attentionSignal, parseCommitSummary, parseDiffNumstat, parseGitStatus, projectHealth, repoCollisions, workspaceGroups, resourceDelta, limitForecast } from "./ai-ops";
 import { deriveNotificationEvents } from "./notification-events";
-import { fetchHerdrAgents, herdrAttention, herdrBusy, herdrPaneOf, herdrSocketsOf } from "./herdr-status";
+import { fetchHerdrAgents, herdrAttention, herdrBusy, herdrPaneOf, herdrSocketsOf, sortSessionsByUrgency } from "./herdr-status";
 import { sendHerdrCommand, validHerdrSocket } from "./herdr-focus";
 
 const HOME = process.env.HOME || "/root";
@@ -1442,8 +1442,10 @@ async function liveSessions(pids: number[]) {
     session.attentionDetail = signal?.detail || "";
     delete session._cwd; delete session._registryBusy; delete session._registryBlocked;
   }));
-  sessions.sort((a, b) => b.startedAt - a.startedAt);
-  return sessions;
+  // Urgency first, newest-first inside each group. The session strip is a
+  // horizontal carousel now, so what falls off the right edge has to be the
+  // least interesting thing on the desk, never a session waiting on an answer.
+  return sortSessionsByUrgency(sessions);
 }
 
 // ---------------------------------------------------------------- AI history
@@ -2092,7 +2094,9 @@ function demoSnapshot(stamp = Date.now()) {
     ],
     counts: { open: 4, draft: 2, ciFail: 1, unread: 2, reviews: 2 },
   };
-  const sessions = [
+  // Ordered the same way the live path is, or demo mode would advertise an
+  // order the real desk does not use.
+  const sessions = sortSessionsByUrgency([
     {
       // Herdr `done`: finished while the user was looking elsewhere. This is
       // the state a title regex could never tell from an ordinary idle one.
@@ -2156,7 +2160,7 @@ function demoSnapshot(stamp = Date.now()) {
       changes: { fingerprint: "beacon-demo-3", count: 2, staged: 0, untracked: 1, files: ["LocalAi.qml", "local-ai.test.ts"], testFiles: 1, additions: 94, deletions: 8, head: "bea00ace", headShort: "bea00ac", commitSubject: "feat: control local models", committedAt: stamp - 35 * 60_000 },
       ci: { state: "failure", name: "qml-check", headSha: "bea00ace", updatedAt: new Date(stamp - 8 * 60_000).toISOString(), checkedAt: stamp },
     },
-  ];
+  ]);
   const promptSeeds = [
     ["codex", "atlas", "Verify atomic state writes and output limits", "demo-codex-session"],
     ["claude", "orbit", "Review the marketplace submission checklist", "demo-claude-session"],

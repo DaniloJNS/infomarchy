@@ -271,7 +271,11 @@ describe("GITHUB · YOU", () => {
     expect(view.match(/ScrollList \{/g)).toHaveLength(3);
     expect(view).not.toContain("recentScrollTrack");
     expect(view).not.toContain("recentScrollThumb");
-    expect(view.match(/function applyWheel/g)).toHaveLength(1);
+    // Two, on purpose: the vertical ScrollList and the horizontal ScrollRow.
+    // Their wheel mapping, track geometry and edge affordances differ enough
+    // that one component parameterised by orientation read worse than two.
+    expect(view.match(/function applyWheel/g)).toHaveLength(2);
+    expect(view).toContain("component ScrollRow: Item");
     // Each column asks for an equal share and imposes no minimum.
     expect(view.match(/Layout\.preferredHeight: view\.githubYouListHeight/g)).toHaveLength(2);
   });
@@ -367,7 +371,9 @@ describe("live session state comes from Herdr", () => {
   });
 
   test("the collector joins Herdr's agent list on pane id, never on session id", () => {
-    expect(collector).toContain('import { fetchHerdrAgents, herdrAttention, herdrBusy, herdrPaneOf, herdrSocketsOf } from "./herdr-status"');
+    expect(collector).toContain('from "./herdr-status"');
+    for (const named of ["fetchHerdrAgents", "herdrAttention", "herdrBusy", "herdrPaneOf", "herdrSocketsOf"])
+      expect(collector).toContain(named);
     expect(collector).toContain("fetchHerdrAgents(herdrSocketsOf(sessions, validHerdrSocket(\"\")), sendHerdrCommand)");
     expect(collector).toContain("const pane = herdrPaneOf(s)");
     expect(collector).toContain("s.herdrStatus = herdrAgents && pane && herdrAgents[pane] ? herdrAgents[pane].status : \"\"");
@@ -418,5 +424,92 @@ describe("live session state comes from Herdr", () => {
     // Bun.connect throws synchronously on a malformed path; a rejection would
     // take the whole collector tick down.
     expect(focus).toContain("} catch { finish(null); }");
+  });
+});
+
+describe("the session carousel", () => {
+  test("one horizontal strip of fixed-width cards, not a wrapping Flow", () => {
+    expect(view).toContain("component ScrollRow: Item");
+    expect(view).toContain("orientation: ListView.Horizontal");
+    expect(view).toContain("id: sessionRail");
+    expect(view).toContain("width: sessionRail.cardWidth");
+    expect(view).toContain("height: sessionRail.listHeight");
+    // The Flow it replaces could not wrap without pushing RECENT TASKS off a
+    // 1080p desk, so it shrank the cards until every line elided instead.
+    expect(view).not.toContain("id: sessionFlow");
+    expect(view).not.toContain("readonly property int fittedCardWidth");
+  });
+
+  test("a vertical wheel scrolls it sideways, and the track is draggable", () => {
+    const rail = view.slice(view.indexOf("component ScrollRow: Item"), view.indexOf("component Tag: Rectangle"));
+    // A vertical wheel over a horizontal list does nothing by default.
+    expect(rail).toContain("Number(wheel.pixelDelta.x || 0) || Number(wheel.pixelDelta.y || 0)");
+    expect(rail).toContain("Number(wheel.angleDelta.x || 0) || Number(wheel.angleDelta.y || 0)");
+    expect(rail).toContain("list.contentX = Math.max(0, Math.min(Math.max(0, list.contentWidth - list.width), list.contentX - delta))");
+    expect(rail).toContain("onPressed: function(mouse) { track.seek(mouse.x) }");
+    expect(rail).toContain("onPositionChanged: function(mouse) { if (pressed) track.seek(mouse.x) }");
+  });
+
+  test("faded edges and a count, because the wallpaper has no keyboard", () => {
+    const rail = view.slice(view.indexOf("component ScrollRow: Item"), view.indexOf("component Tag: Rectangle"));
+    expect(rail.match(/orientation: Gradient\.Horizontal/g)).toHaveLength(2);
+    expect(rail).toContain("visible: rail.scrollable && list.contentX > 1");
+    expect(rail).toContain("visible: rail.scrollable && list.contentX < list.contentWidth - list.width - 1");
+    // "6 running" alone lies about what is on screen once cards can hide.
+    expect(view).toContain('(sessionRail.firstVisible + 1) + "–" + sessionRail.lastVisible + " of " + view.sessions.length');
+  });
+
+  test("J/K keeps the selected card on screen", () => {
+    // A selection that steps off the strip makes the key look broken: it does
+    // something and nothing visible changes.
+    expect(view).toContain("currentIndex: view.keyboardSessionIndex");
+    expect(view).toContain("list.positionViewAtIndex(rail.currentIndex, ListView.Contain)");
+    expect(view).toContain("function keyboardStep(delta)");
+  });
+
+  test("nothing rotates on its own", () => {
+    const rail = view.slice(view.indexOf("component ScrollRow: Item"), view.indexOf("component Tag: Rectangle"));
+    // Periodic movement on a wallpaper steals attention all day and slides the
+    // card out from under the pointer.
+    expect(rail).not.toContain("Timer");
+    expect(rail).not.toContain("NumberAnimation");
+    expect(rail).not.toContain("loops: Animation.Infinite");
+  });
+
+  test("the card is five lines, and the detail moved to the inspector", () => {
+    const card = view.slice(view.indexOf("id: sessionRail"), view.indexOf("MouseArea {\n                id: hover"));
+    // Kept: status + provider + uptime, project, topic, git, host.
+    expect(card).toContain("view.sessionStateLabel(sc.modelData)");
+    expect(card).toContain("view.desk.dur(sc.modelData.uptimeSec)");
+    expect(card).toContain("sc.modelData.project");
+    expect(card).toContain("sc.modelData.topic");
+    expect(card).toContain('"git " + sc.modelData.git.branch');
+    expect(card).toContain('"hosted in " + view.sessionHostLabel(sc.modelData)');
+    // Gone: cwd duplicated the project, the window title duplicated the topic,
+    // and the telemetry line repeated what MACHINE already reports.
+    expect(card).not.toContain("text: sc.modelData.cwd");
+    expect(card).not.toContain('"pid " + sc.modelData.pid');
+    // All three are in the right-click inspector, `name` included, so the
+    // carousel loses nothing that was only on the card.
+    expect(view).toContain("text: sessionInspector.session.cwd");
+    expect(view).toContain('(sessionInspector.session.window || {}).title || "no window title"');
+    expect(view).toContain('if (s.name) parts.push(String(s.name))');
+  });
+
+  test("a stale card keeps how long it has been idle", () => {
+    // STALE replaces the status word rather than sitting beside "IDLE" — a
+    // stale session is idle by definition — and the duration is the part that
+    // tells you whether to kill it.
+    expect(view).toContain('text: "STALE · idle "');
+    expect(view).toContain("Tag { visible: sc.modelData.stale !== true; text: view.sessionStateLabel(sc.modelData)");
+  });
+
+  test("the strip may only ever hide an idle session", () => {
+    // Same lesson as MY PRS, where a broken build sorted to fourth while the
+    // header counted the failure and the carousel hid which one it was.
+    expect(herdrStatus).toContain("export function sortSessionsByUrgency");
+    expect(collector).toContain("return sortSessionsByUrgency(sessions)");
+    // Demo mode advertises the real order, not the literal array order.
+    expect(collector).toContain("const sessions = sortSessionsByUrgency([");
   });
 });

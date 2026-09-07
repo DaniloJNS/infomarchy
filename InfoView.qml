@@ -191,6 +191,23 @@ Item {
   function projectStatusLabel(item) {
     return item.status === "blocked" ? "BLOCKED" : item.status === "running" ? "ACTIVE" : item.status === "behind" ? "BEHIND" : item.status === "changed" ? "CHANGED" : item.status === "unknown" ? "NO REPO" : "HEALTHY"
   }
+  // The session's own state, as one word. Since Herdr reports this for every
+  // pane it hosts (see herdr-status.ts), the card can finally say it outright
+  // instead of leaving the pulsing dot to imply it.
+  function sessionStateLabel(item) {
+    var session = item || {}
+    if (session.attention === "blocked") return "BLOCKED"
+    if (session.attention === "waiting") return "WAITING"
+    if (session.attention === "done") return "DONE"
+    return session.busy === true ? "WORKING" : "IDLE"
+  }
+  function sessionStateTone(item) {
+    var session = item || {}
+    if (session.attention === "blocked") return desk.red
+    if (session.attention === "waiting") return desk.yellow
+    if (session.attention === "done") return desk.green
+    return session.busy === true ? desk.cyan : textFaint
+  }
   function ciLabel(item) {
     var ci = item.ci || {}, state = String(ci.state || "unavailable")
     return state === "unavailable" ? "CI —" : "CI " + state.replace(/_/g, " ").toUpperCase() + (ci.stale ? " · STALE" : "")
@@ -866,6 +883,133 @@ Item {
     }
   }
 
+  // The horizontal sibling of ScrollList, for the session carousel: cards of a
+  // fixed width on one scrolling strip. Deliberately a second component rather
+  // than a two-axis ScrollList — the wheel mapping, the track geometry, the
+  // edge fades and keeping a keyboard selection on screen are all different
+  // enough that one component parameterised by orientation read worse than two.
+  //
+  // Nothing here rotates on its own. Periodic movement on a wallpaper steals
+  // attention all day and slides the card out from under the pointer, so the
+  // strip only ever moves when the user (or the keyboard selection) moves it.
+  component ScrollRow: Item {
+    id: rail
+    property alias model: list.model
+    property alias delegate: list.delegate
+    property alias count: list.count
+    property real cardWidth: Math.round(380 * Style.fontScale)
+    // Uniform cards: a carousel wants them interchangeable, and it is what
+    // makes "which ones are on screen" arithmetic instead of a hit test.
+    property real cardHeight: Math.round(118 * Style.fontScale)
+    property real emptyHeight: Math.round(24 * Style.fontScale)
+    // The keyboard selection (J/K in the overlay). Kept on screen, because a
+    // selection that steps off the strip makes J/K look broken: the key does
+    // something and nothing visible changes.
+    property int currentIndex: -1
+    readonly property real trackHeight: Math.max(8, Math.round(10 * Style.fontScale))
+    readonly property real listHeight: rail.cardHeight
+    width: parent ? parent.width : 400
+    // The track is only paid for when there is something to scroll, so a desk
+    // with three sessions hands those pixels back to RECENT TASKS below.
+    implicitHeight: list.count === 0 ? rail.emptyHeight : rail.cardHeight + (rail.scrollable ? rail.trackHeight + Style.spacing.xs : 0)
+    readonly property real pitch: rail.cardWidth + list.spacing
+    readonly property bool scrollable: list.contentWidth > list.width + 1
+    // Cards are uniform, so which ones are on screen is arithmetic rather than
+    // a hit test — and it stays correct mid-flick.
+    readonly property int firstVisible: rail.pitch > 0 ? Math.max(0, Math.min(Math.max(0, list.count - 1), Math.round(list.contentX / rail.pitch))) : 0
+    // Rounded, not floored: a card showing three quarters of itself is one the
+    // eye counts, and "1-2 of 6" beside three visible cards reads as a bug.
+    readonly property int visibleCount: rail.pitch > 0 ? Math.max(1, Math.round((list.width + list.spacing) / rail.pitch)) : 1
+    readonly property int lastVisible: Math.min(list.count, rail.firstVisible + rail.visibleCount)
+    function applyWheel(wheel) {
+      // A vertical wheel over a horizontal strip does nothing by default, so
+      // both axes are mapped here: a touchpad's horizontal swipe if it sent
+      // one, otherwise the vertical notch everyone actually has.
+      var pixel = wheel.pixelDelta ? (Number(wheel.pixelDelta.x || 0) || Number(wheel.pixelDelta.y || 0)) : 0
+      var angle = wheel.angleDelta ? (Number(wheel.angleDelta.x || 0) || Number(wheel.angleDelta.y || 0)) : 0
+      var delta = pixel !== 0 ? pixel * 2.75 : (angle / 120) * Math.round(120 * Style.fontScale)
+      if (!isFinite(delta) || delta === 0) { wheel.accepted = false; return }
+      list.contentX = Math.max(0, Math.min(Math.max(0, list.contentWidth - list.width), list.contentX - delta))
+      wheel.accepted = true
+    }
+    onCurrentIndexChanged: if (rail.currentIndex >= 0 && rail.currentIndex < list.count) list.positionViewAtIndex(rail.currentIndex, ListView.Contain)
+    ListView {
+      id: list
+      orientation: ListView.Horizontal
+      width: rail.width
+      height: rail.cardHeight
+      spacing: Style.spacing.md
+      clip: true
+      interactive: view.interactive
+      boundsBehavior: Flickable.StopAtBounds
+      flickableDirection: Flickable.HorizontalFlick
+      maximumFlickVelocity: Math.round(6000 * Style.fontScale)
+      flickDeceleration: Math.round(1500 * Style.fontScale)
+      WheelHandler {
+        enabled: view.interactive
+        target: null
+        onWheel: function(event) { rail.applyWheel(event) }
+      }
+    }
+    // There is no keyboard on the wallpaper, so the fades are the only hint
+    // that the strip continues. They sit over the list, under the pointer.
+    Rectangle {
+      width: Math.round(28 * Style.fontScale)
+      height: list.height
+      x: 0
+      visible: rail.scrollable && list.contentX > 1
+      gradient: Gradient {
+        orientation: Gradient.Horizontal
+        GradientStop { position: 0.0; color: Util.alpha(view.desk.themeBackground, 0.9) }
+        GradientStop { position: 1.0; color: "transparent" }
+      }
+    }
+    Rectangle {
+      width: Math.round(28 * Style.fontScale)
+      height: list.height
+      x: rail.width - width
+      visible: rail.scrollable && list.contentX < list.contentWidth - list.width - 1
+      gradient: Gradient {
+        orientation: Gradient.Horizontal
+        GradientStop { position: 0.0; color: "transparent" }
+        GradientStop { position: 1.0; color: Util.alpha(view.desk.themeBackground, 0.9) }
+      }
+    }
+    Rectangle {
+      id: track
+      visible: rail.scrollable
+      height: rail.trackHeight
+      width: rail.width
+      radius: height / 2
+      y: list.height + Style.spacing.xs
+      color: trackMouse.containsMouse ? Util.alpha(view.desk.themeForeground, 0.09) : "transparent"
+      function seek(pointerX) {
+        var usable = Math.max(1, width - thumb.width)
+        var ratio = Math.max(0, Math.min(1, (pointerX - thumb.width / 2) / usable))
+        list.contentX = ratio * Math.max(0, list.contentWidth - list.width)
+      }
+      Rectangle {
+        id: thumb
+        height: Math.max(4, Math.round(6 * Style.fontScale))
+        y: (parent.height - height) / 2
+        radius: height / 2
+        color: trackMouse.pressed ? view.desk.cyan : Util.alpha(view.desk.cyan, trackMouse.containsMouse ? 0.78 : 0.55)
+        width: Math.max(Math.round(28 * Style.fontScale), parent.width * list.width / Math.max(list.width, list.contentWidth))
+        x: Math.max(0, Math.min(parent.width - width, (list.contentX / Math.max(1, list.contentWidth - list.width)) * Math.max(0, parent.width - width)))
+      }
+      MouseArea {
+        id: trackMouse
+        anchors.fill: parent
+        enabled: view.interactive
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onWheel: function(wheel) { rail.applyWheel(wheel) }
+        onPressed: function(mouse) { track.seek(mouse.x) }
+        onPositionChanged: function(mouse) { if (pressed) track.seek(mouse.x) }
+      }
+    }
+  }
+
   component Tag: Rectangle {
     property string text: ""
     property color tone: Color.accent
@@ -966,105 +1110,113 @@ Item {
           Layout.fillWidth: true
           visible: view.sectionEnabled("sessions")
           title: "LIVE AI SESSIONS"
-          hint: view.sessions.length + " running · left focus · right inspect" + (view.desk.error ? " · ⚠ " + view.desk.error : "")
-          Flow {
-            id: sessionFlow
-            width: parent.width
-            spacing: Style.spacing.md
-            // One row: four wide cards, or up to six narrower ones. Wrapping to a
-            // second row pushed RECENT TASKS off the bottom of a 1080p desk.
-            readonly property int targetColumns: Math.max(4, Math.min(6, view.sessions.length))
-            readonly property int minimumCardWidth: Math.round((view.sessions.length > 4 ? 150 : 210) * Style.fontScale)
-            readonly property int fittedCardWidth: Math.floor((width - spacing * (targetColumns - 1)) / targetColumns)
-            Repeater {
-              model: view.sessions
-              delegate: Rectangle {
-                id: sc
-                required property var modelData
-                required property int index
-                readonly property color tone: view.desk.providerColor(modelData.provider)
-                // The collector decides this, and no longer by reading the
-                // terminal title: Herdr reports the pane's real state, Claude's
-                // own registry reports its own, and the systemd turn inhibitor
-                // is a running turn. A title regex here would have overruled all
-                // three whenever an agent forgot to clear "Processing…".
-                readonly property bool busy: modelData.busy === true
-                property string previewSource: view.previewCache[String((sc.modelData.window || {}).address || "")] || ""
-                // Fill four columns when they remain readable; narrower layouts
-                // retain a minimum width and let Flow wrap naturally.
-                width: Math.max(sessionFlow.minimumCardWidth, sessionFlow.fittedCardWidth); height: scol.implicitHeight + Style.spacing.lg * 2
-                // A daemon-hosted background session is real but unattended; dim it so it reads as secondary next to the interactive one.
-                opacity: (sc.modelData.hosts || []).some(function(h) { return h && h.kind === "background" }) ? 0.72 : 1
-                color: hover.containsMouse ? Util.alpha(tone, 0.16) : Util.alpha(tone, 0.08)
-                border.color: view.keyboardSessionIndex === index ? tone : Util.alpha(tone, hover.containsMouse ? 0.9 : 0.45); border.width: view.keyboardSessionIndex === index ? 2 : 1; radius: view.radius
-                Image { anchors.fill: parent; visible: hover.containsMouse && view.previewsEnabled && sc.previewSource !== ""; source: sc.previewSource; fillMode: Image.PreserveAspectCrop; opacity: 0.28 }
-                Timer { interval: 600; running: hover.containsMouse && view.previewsEnabled && sc.previewSource === "" && !!(sc.modelData.window && sc.modelData.window.address); onTriggered: if (!previewProc.running) previewProc.running = true }
-                Process {
-                  id: previewProc
-                  command: ["bun", view.desk.previewPath, (sc.modelData.window || {}).address || ""]
-                  stdout: StdioCollector { onStreamFinished: {
-                    var path = String(text || "").trim()
-                    if (!path) return
-                    var source = "file://" + path + "?" + Date.now(), address = String((sc.modelData.window || {}).address || "")
-                    var next = {}
-                    for (var key in view.previewCache) next[key] = view.previewCache[key]
-                    // Replacing a preview for this window: delete the old artifact first.
-                    if (next[address]) view.desk.removePreview(next[address])
-                    next[address] = source
-                    view.previewCache = next
-                    sc.previewSource = source
-                  } }
+          // With a carousel, "6 running" alone is a lie about what you can
+          // see, so the hint says which of them are on screen.
+          hint: view.sessions.length + " running"
+            + (sessionRail.scrollable ? " · " + (sessionRail.firstVisible + 1) + "–" + sessionRail.lastVisible + " of " + view.sessions.length + " · wheel scrolls" : "")
+            + " · left focus · right inspect" + (view.desk.error ? " · ⚠ " + view.desk.error : "")
+          ScrollRow {
+            id: sessionRail
+            model: view.sessions
+            // J/K in the overlay moves this; the strip follows so the outlined
+            // card is always the one you can see.
+            currentIndex: view.keyboardSessionIndex
+            delegate: Rectangle {
+              id: sc
+              required property var modelData
+              required property int index
+              readonly property color tone: view.desk.providerColor(modelData.provider)
+              // The collector decides this, and no longer by reading the
+              // terminal title: Herdr reports the pane's real state, Claude's
+              // own registry reports its own, and the systemd turn inhibitor
+              // is a running turn. A title regex here would have overruled all
+              // three whenever an agent forgot to clear "Processing…".
+              readonly property bool busy: modelData.busy === true
+              property string previewSource: view.previewCache[String((sc.modelData.window || {}).address || "")] || ""
+              // Uniform, so the strip is a carousel rather than a ragged row.
+              width: sessionRail.cardWidth
+              height: sessionRail.listHeight
+              // A daemon-hosted background session is real but unattended; dim it so it reads as secondary next to the interactive one.
+              opacity: (sc.modelData.hosts || []).some(function(h) { return h && h.kind === "background" }) ? 0.72 : 1
+              color: hover.containsMouse ? Util.alpha(tone, 0.16) : Util.alpha(tone, 0.08)
+              border.color: view.keyboardSessionIndex === index ? tone : Util.alpha(tone, hover.containsMouse ? 0.9 : 0.45); border.width: view.keyboardSessionIndex === index ? 2 : 1; radius: view.radius
+              clip: true
+              Image { anchors.fill: parent; visible: hover.containsMouse && view.previewsEnabled && sc.previewSource !== ""; source: sc.previewSource; fillMode: Image.PreserveAspectCrop; opacity: 0.28 }
+              Timer { interval: 600; running: hover.containsMouse && view.previewsEnabled && sc.previewSource === "" && !!(sc.modelData.window && sc.modelData.window.address); onTriggered: if (!previewProc.running) previewProc.running = true }
+              Process {
+                id: previewProc
+                command: ["bun", view.desk.previewPath, (sc.modelData.window || {}).address || ""]
+                stdout: StdioCollector { onStreamFinished: {
+                  var path = String(text || "").trim()
+                  if (!path) return
+                  var source = "file://" + path + "?" + Date.now(), address = String((sc.modelData.window || {}).address || "")
+                  var next = {}
+                  for (var key in view.previewCache) next[key] = view.previewCache[key]
+                  // Replacing a preview for this window: delete the old artifact first.
+                  if (next[address]) view.desk.removePreview(next[address])
+                  next[address] = source
+                  view.previewCache = next
+                  sc.previewSource = source
+                } }
+              }
+              // Five lines, and only five. The window title duplicated the
+              // topic, the cwd duplicated the project, and the telemetry line
+              // repeated what MACHINE already reports — all three moved to the
+              // right-click inspector, which is where you go when you want the
+              // detail. What is left is what distinguishes one session from
+              // another at a glance, which is the thing the old narrow cards
+              // elided away.
+              ColumnLayout {
+                id: scol
+                anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.spacing.lg }
+                spacing: Style.spacing.xs
+                RowLayout {
+                  Layout.fillWidth: true
+                  spacing: Style.spacing.sm
+                  Rectangle { id: dot; width: 8; height: 8; radius: 4; color: sc.tone
+                    SequentialAnimation { running: sc.busy && sc.visible; loops: Animation.Infinite
+                      onRunningChanged: if (!running) dot.opacity = 1
+                      NumberAnimation { target: dot; property: "opacity"; from: 1; to: 0.2; duration: 700 }
+                      NumberAnimation { target: dot; property: "opacity"; from: 0.2; to: 1; duration: 700 } } }
+                  PlainText { text: view.desk.providerLabel(sc.modelData.provider); color: sc.tone; font.family: view.mono; font.bold: true; font.pixelSize: Style.font.body }
+                  // A stale session is idle by definition, so STALE replaces the
+                  // status word instead of sitting redundantly beside "IDLE" —
+                  // and keeps how long it has been idle, which is the part that
+                  // tells you whether to kill it.
+                  Tag { visible: sc.modelData.stale !== true; text: view.sessionStateLabel(sc.modelData); tone: view.sessionStateTone(sc.modelData) }
+                  // Unattended and idle for hours: probably a zombie. Right-click → inspector → STOP / END.
+                  Tag { visible: sc.modelData.stale === true; text: "STALE · idle " + view.desk.dur((Date.now() - Number(sc.modelData.idleSince || Date.now())) / 1000); tone: view.desk.yellow }
+                  Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                  PlainText { text: view.desk.dur(sc.modelData.uptimeSec); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption }
                 }
-                ColumnLayout {
-                  id: scol
-                  anchors { fill: parent; margins: Style.spacing.lg }
-                  spacing: Style.spacing.xs
-                  RowLayout {
-                    Layout.fillWidth: true
-                    Rectangle { id: dot; width: 8; height: 8; radius: 4; color: sc.tone
-                      SequentialAnimation { running: sc.busy && sc.visible; loops: Animation.Infinite
-                        onRunningChanged: if (!running) dot.opacity = 1
-                        NumberAnimation { target: dot; property: "opacity"; from: 1; to: 0.2; duration: 700 }
-                        NumberAnimation { target: dot; property: "opacity"; from: 0.2; to: 1; duration: 700 } } }
-                    PlainText { text: view.desk.providerLabel(sc.modelData.provider); color: sc.tone; font.family: view.mono; font.bold: true; font.pixelSize: Style.font.body }
-                    // Unattended and idle for hours: probably a zombie. Right-click → inspector → STOP / END.
-                    Tag { visible: sc.modelData.stale === true; text: "STALE · idle " + view.desk.dur((Date.now() - Number(sc.modelData.idleSince || Date.now())) / 1000); tone: view.desk.yellow }
-                    Item { Layout.fillWidth: true }
-                    PlainText { text: view.desk.dur(sc.modelData.uptimeSec); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption }
-                  }
-                  PlainText { Layout.fillWidth: true; text: sc.modelData.project || "/"; color: view.desk.themeForeground; font.family: view.mono; font.pixelSize: Style.font.subtitle; elide: Text.ElideMiddle }
-                  PlainText {
-                    Layout.fillWidth: true
-                    text: sc.modelData.topic ? "↳ " + sc.modelData.topic : "↳ " + ((sc.modelData.window || {}).title || "topic unavailable")
-                    color: sc.modelData.topic ? sc.tone : view.textDim
-                    font.family: view.mono
-                    font.pixelSize: Style.font.bodySmall
-                    font.bold: !!sc.modelData.topic
-                    wrapMode: Text.Wrap
-                    maximumLineCount: 2
-                    elide: Text.ElideRight
-                  }
-                  PlainText { Layout.fillWidth: true; visible: !!sc.modelData.cwd; text: sc.modelData.cwd || ""; color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideMiddle }
-                  PlainText { Layout.fillWidth: true; visible: (sc.modelData.hosts || []).length > 0; text: "hosted in " + view.sessionHostLabel(sc.modelData) + (sc.modelData.window ? " · click jumps to the pane" : ((sc.modelData.hosts || []).some(function(h) { return h && h.kind === "background" && h.attachId }) ? " · click attaches a terminal" : " · no client window found")); color: sc.tone; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
-                  PlainText { Layout.fillWidth: true; visible: !!sc.modelData.topic && !!(sc.modelData.window && sc.modelData.window.title); text: sc.modelData.window ? (sc.modelData.window.title || "") : ""; color: view.textDim; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
-                  PlainText { Layout.fillWidth: true; visible: !!sc.modelData.git; text: sc.modelData.git ? ("git " + sc.modelData.git.branch + (sc.modelData.git.dirty ? " · " + sc.modelData.git.dirty + " changed" : " · clean") + (sc.modelData.git.ahead ? " · ↑" + sc.modelData.git.ahead : "") + (sc.modelData.git.behind ? " · ↓" + sc.modelData.git.behind : "") + (sc.modelData.git.conflicts ? " · " + sc.modelData.git.conflicts + " conflicts" : "")) : ""; color: sc.modelData.git && sc.modelData.git.conflicts ? view.desk.red : sc.modelData.git && sc.modelData.git.dirty ? view.desk.yellow : view.desk.green; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
-                  PlainText { Layout.fillWidth: true; text: "pid " + sc.modelData.pid + (sc.modelData.name ? " · " + sc.modelData.name : "") + (sc.modelData.window ? " · ws " + sc.modelData.window.workspace : " · no window") + " · cpu " + (sc.modelData.resources && sc.modelData.resources.cpuPct !== null ? sc.modelData.resources.cpuPct.toFixed(1) + "%" : "—") + " · ram " + ((sc.modelData.resources || {}).rss !== null ? view.desk.bytes((sc.modelData.resources || {}).rss) : "—") + " · " + ((sc.modelData.resources || {}).processes !== null ? ((sc.modelData.resources || {}).processes || 0) : "—") + " proc" + ((sc.modelData.resources || {}).gpuMemory ? " · gpu " + view.desk.bytes(sc.modelData.resources.gpuMemory) : ""); color: view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
+                PlainText { Layout.fillWidth: true; text: sc.modelData.project || "/"; color: view.desk.themeForeground; font.family: view.mono; font.pixelSize: Style.font.subtitle; elide: Text.ElideMiddle }
+                PlainText {
+                  Layout.fillWidth: true
+                  text: sc.modelData.topic ? "↳ " + sc.modelData.topic : "↳ " + ((sc.modelData.window || {}).title || "topic unavailable")
+                  color: sc.modelData.topic ? sc.tone : view.textDim
+                  font.family: view.mono
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: !!sc.modelData.topic
+                  wrapMode: Text.Wrap
+                  maximumLineCount: 2
+                  elide: Text.ElideRight
                 }
-                MouseArea {
-                  id: hover; anchors.fill: parent; hoverEnabled: true; enabled: view.interactive
-                  cursorShape: sc.modelData.window || (sc.modelData.hosts || []).some(function(h) { return h && ((h.kind === "boomux" && h.shellId) || (h.kind === "background" && h.attachId)) }) ? Qt.PointingHandCursor : Qt.ArrowCursor
-                  acceptedButtons: Qt.LeftButton | Qt.RightButton
-                  onClicked: function(mouse) {
-                    if (mouse.button === Qt.RightButton) view.inspectedSession = sc.modelData
-                    else if (view.desk.focusSession(sc.modelData)) view.navigated()
-                  }
+                PlainText { Layout.fillWidth: true; visible: !!sc.modelData.git; text: sc.modelData.git ? ("git " + sc.modelData.git.branch + (sc.modelData.git.dirty ? " · " + sc.modelData.git.dirty + " changed" : " · clean") + (sc.modelData.git.ahead ? " · ↑" + sc.modelData.git.ahead : "") + (sc.modelData.git.behind ? " · ↓" + sc.modelData.git.behind : "") + (sc.modelData.git.conflicts ? " · " + sc.modelData.git.conflicts + " conflicts" : "")) : ""; color: sc.modelData.git && sc.modelData.git.conflicts ? view.desk.red : sc.modelData.git && sc.modelData.git.dirty ? view.desk.yellow : view.desk.green; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
+                PlainText { Layout.fillWidth: true; visible: (sc.modelData.hosts || []).length > 0; text: "hosted in " + view.sessionHostLabel(sc.modelData) + (sc.modelData.window ? " · click jumps to the pane" : ((sc.modelData.hosts || []).some(function(h) { return h && h.kind === "background" && h.attachId }) ? " · click attaches a terminal" : " · no client window found")); color: sc.tone; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
+              }
+              MouseArea {
+                id: hover; anchors.fill: parent; hoverEnabled: true; enabled: view.interactive
+                cursorShape: sc.modelData.window || (sc.modelData.hosts || []).some(function(h) { return h && ((h.kind === "boomux" && h.shellId) || (h.kind === "background" && h.attachId)) }) ? Qt.PointingHandCursor : Qt.ArrowCursor
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onClicked: function(mouse) {
+                  if (mouse.button === Qt.RightButton) view.inspectedSession = sc.modelData
+                  else if (view.desk.focusSession(sc.modelData)) view.navigated()
                 }
               }
             }
             PlainText {
+              anchors { left: parent.left; right: parent.right; top: parent.top }
               visible: view.sessions.length === 0
-              // Parent is a Flow: Layout.* is ignored there, so size explicitly or wrapMode never wraps.
-              width: sessionFlow.width
               wrapMode: Text.Wrap
               text: view.desk.bunChecked && !view.desk.bunAvailable ? view.desk.missingDependencyHint
                 : view.desk.ready ? "no agents running — go start something"
@@ -2106,7 +2258,8 @@ Item {
         text: {
           var s = sessionInspector.session, w = s.window || {}, g = s.git || null
           var parts = ["workspace " + (w.workspace === null || w.workspace === undefined ? "—" : w.workspace)]
-          if (s.session) parts.push("session " + String(s.session).slice(0, 13) + "…")
+          if (s.name) parts.push(String(s.name))
+        if (s.session) parts.push("session " + String(s.session).slice(0, 13) + "…")
           if (g) parts.push("git " + g.branch + (g.dirty ? " · " + g.dirty + " changed" : " · clean") + (g.conflicts ? " · " + g.conflicts + " conflicts" : ""))
           return parts.join("   ·   ")
         }

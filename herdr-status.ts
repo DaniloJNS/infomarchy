@@ -203,3 +203,17 @@ export function sessionUrgency(session: unknown): number {
   if (item.busy === true) return 2;
   return 3;
 }
+
+// Ordered for a carousel, which can push a card off the visible strip: the
+// most urgent first, so the only thing it can ever hide is an idle session.
+// Within a group the order is the one the desk already had — newest first,
+// with pid as the final tiebreak — so cards keep a stable place across ticks
+// instead of swapping under the cursor while nothing has actually changed.
+export function sortSessionsByUrgency<T>(sessions: T[]): T[] {
+  return [...(sessions || [])].sort((a, b) => {
+    const left = (a || {}) as Record<string, any>, right = (b || {}) as Record<string, any>;
+    return sessionUrgency(a) - sessionUrgency(b)
+      || Number(right.startedAt || 0) - Number(left.startedAt || 0)
+      || Number(left.pid || 0) - Number(right.pid || 0);
+  });
+}
