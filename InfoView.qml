@@ -1212,7 +1212,7 @@ Item {
                 // 25 characters that were identical on every card pushed the
                 // one abnormal case — the click that does nothing — off the end
                 // of an elided line.
-                PlainText { Layout.fillWidth: true; visible: (sc.modelData.hosts || []).length > 0; text: view.sessionHostLabel(sc.modelData) + (sc.modelData.window ? "" : ((sc.modelData.hosts || []).some(function(h) { return h && h.kind === "background" && h.attachId }) ? " · click attaches a terminal" : " · no client window found")); color: sc.tone; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
+                PlainText { Layout.fillWidth: true; visible: (sc.modelData.hosts || []).length > 0; text: "hosted in " + view.sessionHostLabel(sc.modelData) + (sc.modelData.window ? "" : ((sc.modelData.hosts || []).some(function(h) { return h && h.kind === "background" && h.attachId }) ? " · click attaches a terminal" : " · no client window found")); color: sc.tone; font.family: view.mono; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
               }
               MouseArea {
                 id: hover; anchors.fill: parent; hoverEnabled: true; enabled: view.interactive

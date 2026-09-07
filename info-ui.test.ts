@@ -62,7 +62,7 @@ describe("interactive information modules", () => {
   test("shows multiplexer hosting context on live cards and the inspector", () => {
     expect(view).toContain("function sessionHostLabel");
     expect(view).toContain("function sessionHostDetail");
-    expect(view).toContain("text: view.sessionHostLabel");
+    expect(view).toContain('text: "hosted in " + view.sessionHostLabel');
     expect(view).toContain("view.sessionHostDetail(sessionInspector.session)");
     // Names on the card, ids in the inspector: the card reads "herdr ~ › recover"
     // while sessionHostDetail keeps the wB / wB:t1 / wB:p1 the click aims at.
@@ -193,7 +193,7 @@ describe("LOCAL AI rows stay inside the card body", () => {
 describe("session card lines never spill into the neighbouring card", () => {
   test("every fill-width single-line text in a session card elides", () => {
     const view = readFileSync(join(import.meta.dir, "InfoView.qml"), "utf8");
-    const start = view.indexOf("text: view.sessionHostLabel(sc.modelData)");
+    const start = view.indexOf('"hosted in " + view.sessionHostLabel(sc.modelData)');
     const block = view.slice(view.lastIndexOf("ColumnLayout", start), view.indexOf("\n                }", start));
     // The merged pid/cpu line had no elide: the taller first card's line ran under its
     // neighbour's git line ("git mainc·uclean · ram 360M"). Fill-width, one line ⇒ elide.
@@ -506,7 +506,7 @@ describe("the session carousel", () => {
     expect(card).toContain("sc.modelData.project");
     expect(card).toContain("sc.modelData.topic");
     expect(card).toContain('"git " + sc.modelData.git.branch');
-    expect(card).toContain("text: view.sessionHostLabel(sc.modelData)");
+    expect(card).toContain('"hosted in " + view.sessionHostLabel(sc.modelData)');
     // Gone: cwd duplicated the project, the window title duplicated the topic,
     // and the telemetry line repeated what MACHINE already reports.
     expect(card).not.toContain("text: sc.modelData.cwd");
