@@ -135,7 +135,7 @@ describe("overlay shows the real desktop", () => {
     const overlay = readFileSync(join(import.meta.dir, "Overlay.qml"), "utf8");
     expect(overlay).toContain("source: Util.fileUrl(root.background)");
     expect(overlay).toContain("opacity: dashboardSettings.ready && dashboardSettings.dashboardVisible ? root.wallpaperOpacity : 1.0");
-    expect(overlay).toContain("visible: dashboardSettings.ready && dashboardSettings.dashboardVisible\n          onNavigated: root.close()");
+    expect(overlay).toContain("visible: panel.isDeskScreen && dashboardSettings.ready && dashboardSettings.dashboardVisible\n          onNavigated: root.close()");
     expect(overlay).not.toContain("Util.alpha(infoModel.themeBackground, 0.88)");
   });
 });
@@ -549,5 +549,38 @@ describe("the session carousel", () => {
     expect(collector).toContain("return sortSessionsByUrgency(sessions)");
     // Demo mode advertises the real order, not the literal array order.
     expect(collector).toContain("const sessions = sortSessionsByUrgency([");
+  });
+});
+
+describe("the overlay can always be dismissed", () => {
+  // Regression. The cards were confined to one screen by dropping the panel
+  // from the others, which quietly removed the only escape hatch that works
+  // when you are not looking at that screen. WlrKeyboardFocus.Exclusive is a
+  // global grab, not a per-output one: with the overlay open on the laptop,
+  // every window on every monitor stopped accepting keys, a click on the
+  // monitor being used hit an ordinary window and closed nothing, and there
+  // was no keybind. The desktop read as frozen.
+  test("a panel exists on every screen, so a click anywhere closes it", () => {
+    expect(overlay).toContain("visible: root.opened && !remapGuard.remapping");
+    // Not gated on the screen: that gate was the bug.
+    expect(overlay).not.toContain("visible: root.opened && !remapGuard.remapping && modelData.name === root.deskScreenName");
+    expect(overlay).toContain("MouseArea { anchors.fill: parent; onClicked: root.close() }");
+  });
+
+  test("only the desk screen draws cards, holds the grab, and takes Qt focus", () => {
+    expect(overlay).toContain("readonly property bool isDeskScreen: modelData.name === root.deskScreenName");
+    // Two surfaces claiming an exclusive grab is undefined behaviour.
+    expect(overlay).toContain("root.opened && panel.isDeskScreen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None");
+    expect(overlay).toContain("focus: root.opened && panel.isDeskScreen");
+    expect(overlay).toContain("if (visible && panel.isDeskScreen) Qt.callLater");
+    // No wallpaper and no background colour on the catchers, or they would be
+    // an opaque sheet over the other monitors.
+    expect(overlay).toContain('color: panel.isDeskScreen ? infoModel.themeBackground : "transparent"');
+    expect(overlay).toContain("visible: panel.isDeskScreen\n          source: Util.fileUrl(root.background)");
+  });
+
+  test("the catchers say what they are instead of swallowing input mutely", () => {
+    expect(overlay).toContain('text: "infomarchy overlay · click or Esc to close"');
+    expect(overlay).toContain("visible: !panel.isDeskScreen");
   });
 });

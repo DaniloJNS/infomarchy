@@ -11,11 +11,18 @@ import qs.Ui
 Scope {
   id: root
   property bool opened: false
-  // Same single output as the desk (Infomarchy.qml). Here the whole panel is
-  // dropped from the other screens rather than just the cards: an overlay is
-  // summoned, so an empty layer on the second monitor would only swallow
-  // clicks. Esc still closes it — the layer holds exclusive keyboard focus —
-  // but a click on another screen no longer does.
+  // Same single output as the desk (Infomarchy.qml): the cards, the wallpaper
+  // and the keyboard grab all belong to one screen.
+  //
+  // The panel itself still exists on the others, as a transparent click
+  // catcher. Dropping it entirely looked right and was a trap: the layer's
+  // keyboard focus is Exclusive, which is a *global* grab rather than a
+  // per-output one, so with the overlay open on the laptop no window on any
+  // screen receives a key. The only ways out were Esc on the overlay's own
+  // screen or a click on the overlay itself — and on the screen the user was
+  // actually working on there was nothing to click and nothing to explain the
+  // silence. Every window looked frozen. A click anywhere closes it again,
+  // and the other screens say so rather than swallowing input mutely.
   readonly property string deskScreenName: {
     var want = Quickshell.env("INFOMARCHY_SCREEN") || "eDP-1"
     var screens = Quickshell.screens
@@ -67,13 +74,16 @@ Scope {
     PanelWindow {
       id: panel
       required property var modelData
+      readonly property bool isDeskScreen: modelData.name === root.deskScreenName
       screen: modelData
-      visible: root.opened && !remapGuard.remapping && modelData.name === root.deskScreenName
+      visible: root.opened && !remapGuard.remapping
       anchors { top: true; bottom: true; left: true; right: true }
       color: "transparent"
       WlrLayershell.namespace: "infomarchy-overlay"
       WlrLayershell.layer: WlrLayer.Overlay
-      WlrLayershell.keyboardFocus: root.opened ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+      // One grab, on the screen that draws the cards. The catchers ask for
+      // nothing: two surfaces claiming an exclusive grab is undefined.
+      WlrLayershell.keyboardFocus: root.opened && panel.isDeskScreen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
       exclusionMode: ExclusionMode.Ignore
 
       ScreenMoveRemap {
@@ -84,9 +94,10 @@ Scope {
       Rectangle {
         id: keyCatcher
         anchors.fill: parent
-        color: infoModel.themeBackground
+        color: panel.isDeskScreen ? infoModel.themeBackground : "transparent"
         Image {
           anchors.fill: parent
+          visible: panel.isDeskScreen
           source: Util.fileUrl(root.background)
           fillMode: Image.PreserveAspectCrop
           asynchronous: true
@@ -94,7 +105,7 @@ Scope {
           opacity: dashboardSettings.ready && dashboardSettings.dashboardVisible ? root.wallpaperOpacity : 1.0
           Behavior on opacity { NumberAnimation { duration: 300 } }
         }
-        focus: root.opened
+        focus: root.opened && panel.isDeskScreen
         Keys.onEscapePressed: root.close()
         Keys.onPressed: function(event) {
           if (event.key >= Qt.Key_0 && event.key <= Qt.Key_9) { var i = event.key === Qt.Key_0 ? 9 : event.key - Qt.Key_1; var def = dashboardSettings.definitions[i]; if (def) dashboardSettings.toggleSection(def.id); event.accepted = true; return }
@@ -105,8 +116,21 @@ Scope {
         }
         // Exclusive keyboard focus on the layer is not enough — Qt still
         // needs an item with activeFocus or Esc never fires.
-        onVisibleChanged: if (visible) Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+        onVisibleChanged: if (visible && panel.isDeskScreen) Qt.callLater(function() { keyCatcher.forceActiveFocus() })
         MouseArea { anchors.fill: parent; onClicked: root.close() }
+        // The one thing drawn on the other screens. A transparent layer that
+        // eats clicks and keys with no explanation reads as a frozen desktop,
+        // which is exactly how this failed.
+        Text {
+          anchors.centerIn: parent
+          visible: !panel.isDeskScreen
+          text: "infomarchy overlay · click or Esc to close"
+          color: infoModel.themeForeground
+          opacity: 0.55
+          font.family: Style.resolvedFontFamily
+          font.pixelSize: Style.font.body
+          renderType: Text.NativeRendering
+        }
         InfoView {
           id: infoView
           anchors.fill: parent
@@ -115,7 +139,7 @@ Scope {
           interactive: true
           topInset: Style.spacing.xl
           // SUPER+I applies here too: hidden dashboard = plain wallpaper, same as the desk.
-          visible: dashboardSettings.ready && dashboardSettings.dashboardVisible
+          visible: panel.isDeskScreen && dashboardSettings.ready && dashboardSettings.dashboardVisible
           onNavigated: root.close()
         }
       }
