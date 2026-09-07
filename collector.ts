@@ -1057,19 +1057,42 @@ export function inferSessionIdsFromRecent(sessions: any[], recentEntries: any[])
   }
 }
 
-async function githubCiState(cwd: string): Promise<any> {
-  const previous = prev.ciByRepo && typeof prev.ciByRepo === "object" ? prev.ciByRepo[cwd] : null;
+// The branch whose CI we may ask about. Rejects the "(detached)" that
+// porcelain=v2 reports for a detached HEAD, and anything starting with "-",
+// which `gh` would read as a flag rather than a ref.
+export function validCiBranch(value: unknown): string {
+  const branch = String(value || "").trim();
+  return /^[A-Za-z0-9._][A-Za-z0-9._\/-]{0,199}$/.test(branch) ? branch : "";
+}
+
+// CI belongs to a branch, not to a repository. `gh run list` without --branch
+// answers with the newest run in the whole repository, so a dependency bot
+// failing on main marked every checkout of that repo "blocked" — rank 0 in
+// projectHealth's ordering, red, and top of the card — while the branch
+// actually checked out was green. A detached HEAD has no branch to ask about
+// and reports nothing rather than inheriting main's verdict.
+async function githubCiState(cwd: string, branchName: string): Promise<any> {
+  const branch = validCiBranch(branchName);
+  // Keyed by branch as well as directory: switching branches used to keep
+  // showing the previous branch's verdict for the rest of the ten minutes.
+  const key = branch ? cwd + "\n" + branch : cwd;
+  const previous = prev.ciByRepo && typeof prev.ciByRepo === "object" ? prev.ciByRepo[key] : null;
   const checkedAt = Number(previous?.checkedAt || 0);
   if (checkedAt > 0 && now >= checkedAt && now - checkedAt < 10 * 60 * 1000) {
-    currentCiByRepo[cwd] = previous;
+    currentCiByRepo[key] = previous;
     return previous;
+  }
+  if (!branch) {
+    const unavailable = { state: "unavailable", checkedAt: now };
+    currentCiByRepo[key] = unavailable;
+    return unavailable;
   }
   if (!Bun.which("gh")) {
     const unavailable = previous ? { ...previous, checkedAt: now, stale: true } : { state: "unavailable", checkedAt: now };
-    currentCiByRepo[cwd] = unavailable;
+    currentCiByRepo[key] = unavailable;
     return unavailable;
   }
-  const output = await run(["gh", "run", "list", "--limit", "1", "--json", "status,conclusion,name,headSha,updatedAt"], 1800, cwd);
+  const output = await run(["gh", "run", "list", "--branch", branch, "--limit", "1", "--json", "status,conclusion,name,headSha,updatedAt"], 1800, cwd);
   const rows = parseJsonBounded(output, 256, 10);
   const latest = Array.isArray(rows) && rows.length && rows[0] && typeof rows[0] === "object" ? rows[0] : null;
   const state = String(latest?.conclusion || latest?.status || "").toLowerCase();
@@ -1081,20 +1104,24 @@ async function githubCiState(cwd: string): Promise<any> {
     checkedAt: now,
     stale: false,
   } : previous ? { ...previous, checkedAt: now, stale: true } : { state: "unavailable", checkedAt: now };
-  currentCiByRepo[cwd] = result;
+  currentCiByRepo[key] = result;
   return result;
 }
 
 async function repoState(cwd: string) {
   if (!cwd) return { root: "", state: null, changes: null, ci: null };
-  const [root, status, diff, commitLine, ci] = await Promise.all([
+  const [root, status, diff, commitLine] = await Promise.all([
     run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], 700),
     run(["git", "-C", cwd, "-c", "core.quotePath=off", "status", "--porcelain=v2", "--branch"], 900),
     run(["git", "-C", cwd, "diff", "--numstat", "HEAD", "--"], 900),
     run(["git", "-C", cwd, "log", "-1", "--format=%H%x09%h%x09%ct%x09%s"], 700),
-    githubCiState(cwd),
   ]);
   const state = parseGitStatus(status), stats = parseDiffNumstat(diff), commit = parseCommitSummary(commitLine);
+  // Sequenced after the status rather than beside it, because the CI lookup
+  // needs the branch that status reports. Its answer is cached for ten
+  // minutes, so on all but one tick in a hundred and fifty this awaits a
+  // cache hit and costs nothing.
+  const ci = await githubCiState(cwd, state?.branch || "");
   // Status and numstat cannot tell one edit from another edit of the same
   // size; fold in the mtimes of the reported paths so "seen" tracks content.
   const stamps = (state?.files || []).slice(0, 12).map(file => { try { return lstatSync(join(root.trim() || cwd, file)).mtimeMs; } catch { return 0; } });

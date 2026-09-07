@@ -111,6 +111,25 @@ describe("usage forecast", () => {
 });
 
 describe("project health honesty", () => {
+  test("a failure on another branch does not block the checked-out one", () => {
+    // The live case: a dependency bot's run failed on main while
+    // INFLTECH-14351 was green, and projectHealth called the repo blocked.
+    const onBranch = projectHealth([{
+      repoRoot: "/w/hermes", project: "hermes", provider: "claude", pid: 1,
+      git: { branch: "INFLTECH-14351", dirty: 14, staged: 0, untracked: 14, ahead: 0, behind: 0, conflicts: 0, files: [] },
+      ci: { state: "success", name: "CI" },
+    }]);
+    expect(onBranch[0].status).toBe("changed");
+    // No runs for this branch at all is unknown-shaped, not a verdict: the
+    // repo still reports what git can see on its own.
+    const noRuns = projectHealth([{
+      repoRoot: "/w/hermes", project: "hermes", provider: "claude", pid: 1,
+      git: { branch: "brand-new", dirty: 0, staged: 0, untracked: 0, ahead: 0, behind: 0, conflicts: 0, files: [] },
+      ci: { state: "unavailable" },
+    }]);
+    expect(noRuns[0].status).toBe("healthy");
+  });
+
   test("missing git state is unknown, not healthy", () => {
     const [project] = projectHealth([{ provider: "claude", pid: 1, cwd: "~/x", repoRoot: "", git: null, ci: null, project: "x" }]);
     expect(project.status).toBe("unknown");
